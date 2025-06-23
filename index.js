@@ -16,7 +16,7 @@ import { readFile } from 'fs/promises';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7938845737:AAHrsANimK_-b_vRV_8Dm3BY1jUo7BcCAY8';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7226556716';
 const CALENDAR_ID = process.env.CALENDAR_ID || 'e26eec24c84a8d03d554eb3e498f37888f208cbc4c8fa741408319b1c1fcb06b@group.calendar.google.com';
-const SHEET_ID = process.env.SHEET_ID || '1GH8zQTwVWUSwzX01V2BIIVMr940uob4ph-GeoT2zYtU';
+const SHEET_ID = process.env.SHEET_ID || '1lXv4lJ6dYUUaIYf44Xx44yx_aKiPfTfzymyCAeflgz0';
 const PORT = process.env.PORT || 3000;
 
 // Express setup
@@ -63,15 +63,28 @@ async function initializeGoogleServices() {
     // Use environment variable for credentials in production
     let credentials;
     if (process.env.GOOGLE_CREDENTIALS) {
-      credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+      console.log('✅ Using GOOGLE_CREDENTIALS from environment');
+      try {
+        credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+        console.log('✅ Successfully parsed Google credentials from environment');
+      } catch (parseError) {
+        console.error('❌ Failed to parse GOOGLE_CREDENTIALS JSON:', parseError.message);
+        throw new Error('Invalid GOOGLE_CREDENTIALS format');
+      }
     } else {
-      // Fallback to file for local development
-      credentials = JSON.parse(
-        await readFile(new URL('./credentials.json', import.meta.url))
-      );
+      console.log('✅ Using credentials.json file');
+      try {
+        credentials = JSON.parse(
+          await readFile(new URL('./credentials.json', import.meta.url))
+        );
+      } catch (fileError) {
+        console.error('❌ Failed to read credentials.json:', fileError.message);
+        throw new Error('credentials.json file not found or invalid');
+      }
     }
     
     console.log('✅ Credentials loaded, creating JWT...');
+    console.log('📧 Using service account:', credentials.client_email);
     
     serviceAccountAuth = new JWT({
       email: credentials.client_email,
@@ -98,6 +111,9 @@ async function initializeGoogleServices() {
   } catch (error) {
     console.error('❌ Failed to initialize Google Services:', error);
     console.error('Error details:', error.message);
+    if (error.stack) {
+      console.error('Stack trace:', error.stack);
+    }
     process.exit(1);
   }
 }
