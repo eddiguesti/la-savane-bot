@@ -1414,3 +1414,5 @@ process.once('SIGTERM', () => {
   bot.stop('SIGTERM');
 });
 
+// Start the application
+startApp();
