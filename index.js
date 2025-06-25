@@ -1,5 +1,5 @@
-/* index.js - PRODUCTION READY VERSION
- * Telegram Booking Bot using Google Sheets + Google Calendar
+/* index.js - PRODUCTION READY VERSION WITH CAPACITY MANAGEMENT
+ * Telegram Booking Bot using Google Sheets + Google Calendar + Capacity Control
  * ========================================
  */
 
@@ -18,6 +18,26 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7226556716';
 const CALENDAR_ID = process.env.CALENDAR_ID || 'e26eec24c84a8d03d554eb3e498f37888f208cbc4c8fa741408319b1c1fcb06b@group.calendar.google.com';
 const SHEET_ID = process.env.SHEET_ID || '1lXv4lJ6dYUUaIYf44Xx44yx_aKiPfTfzymyCAeflgz0';
 const PORT = process.env.PORT || 3000;
+
+// ── CAPACITY MANAGEMENT CONFIGURATION ───────────────────────────────────────
+const CAPACITY_CONFIG = {
+  lunch: {
+    maxCapacity: 60,
+    startHour: 12,
+    endHour: 14,
+    blocked: false  // Blocage spécifique du service
+  },
+  dinner: {
+    maxCapacity: 70,
+    startHour: 19,
+    endHour: 22,
+    blocked: false  // Blocage spécifique du service
+  }
+};
+
+// État de blocage global des réservations en ligne
+let globalOnlineBookingBlocked = false;
+let waitingList = new Map(); // Pour stocker les demandes en attente
 
 // Express setup
 const app = express();
@@ -39,7 +59,7 @@ app.use((req, res, next) => {
 // Health-check
 app.get('/', (req, res) => res.json({ 
   status: 'running', 
-  service: 'La Savane Booking Bot',
+  service: 'La Savane Booking Bot with Capacity Management',
   timestamp: new Date().toISOString()
 }));
 
@@ -54,6 +74,119 @@ let serviceAccountAuth;
 
 // Store user reservation sessions
 const userSessions = new Map();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CAPACITY MANAGEMENT FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Déterminer le service (déjeuner/dîner) selon l'heure
+function getServiceType(dateTime) {
+  const hour = new Date(dateTime).getHours();
+  
+  if (hour >= CAPACITY_CONFIG.lunch.startHour && hour <= CAPACITY_CONFIG.lunch.endHour) {
+    return 'lunch';
+  } else if (hour >= CAPACITY_CONFIG.dinner.startHour && hour <= CAPACITY_CONFIG.dinner.endHour) {
+    return 'dinner';
+  }
+  return null; // Hors heures de service
+}
+
+// Calculer la capacité utilisée pour un service donné
+async function getUsedCapacity(date, serviceType) {
+  try {
+    if (!sheet) return 0;
+    
+    await sheet.loadHeaderRow();
+    const rows = await sheet.getRows();
+    
+    const dateStr = date.toISOString().split('T')[0];
+    const service = CAPACITY_CONFIG[serviceType];
+    
+    let totalPeople = 0;
+    
+    rows.forEach(row => {
+      const dateTime = row.get('DateTime');
+      if (dateTime && dateTime.startsWith(dateStr)) {
+        const reservationHour = new Date(dateTime).getHours();
+        if (reservationHour >= service.startHour && reservationHour <= service.endHour) {
+          totalPeople += parseInt(row.get('Party') || 0);
+        }
+      }
+    });
+    
+    return totalPeople;
+  } catch (error) {
+    console.error('Erreur calcul capacité:', error);
+    return 0;
+  }
+}
+
+// Vérifier si une réservation est possible
+async function checkCapacityAvailable(dateTime, partySize) {
+  const serviceType = getServiceType(dateTime);
+  if (!serviceType) {
+    return { available: false, reason: 'Hors heures de service' };
+  }
+  
+  // Vérifier si le service spécifique est bloqué
+  if (CAPACITY_CONFIG[serviceType].blocked) {
+    return { 
+      available: false, 
+      reason: 'Service temporairement fermé',
+      service: serviceType === 'lunch' ? 'déjeuner' : 'dîner'
+    };
+  }
+  
+  const date = new Date(dateTime);
+  const usedCapacity = await getUsedCapacity(date, serviceType);
+  const maxCapacity = CAPACITY_CONFIG[serviceType].maxCapacity;
+  const remainingCapacity = maxCapacity - usedCapacity;
+  
+  if (partySize <= remainingCapacity) {
+    return { 
+      available: true, 
+      remaining: remainingCapacity - partySize,
+      service: serviceType === 'lunch' ? 'déjeuner' : 'dîner'
+    };
+  } else {
+    return { 
+      available: false, 
+      reason: 'Capacité insuffisante',
+      remaining: remainingCapacity,
+      needed: partySize,
+      service: serviceType === 'lunch' ? 'déjeuner' : 'dîner'
+    };
+  }
+}
+
+// Obtenir le statut de capacité pour aujourd'hui
+async function getTodayCapacityStatus() {
+  const today = new Date();
+  
+  const lunchUsed = await getUsedCapacity(today, 'lunch');
+  const dinnerUsed = await getUsedCapacity(today, 'dinner');
+  
+  return {
+    lunch: {
+      used: lunchUsed,
+      max: CAPACITY_CONFIG.lunch.maxCapacity,
+      remaining: CAPACITY_CONFIG.lunch.maxCapacity - lunchUsed,
+      percentage: Math.round((lunchUsed / CAPACITY_CONFIG.lunch.maxCapacity) * 100),
+      blocked: CAPACITY_CONFIG.lunch.blocked
+    },
+    dinner: {
+      used: dinnerUsed,
+      max: CAPACITY_CONFIG.dinner.maxCapacity,
+      remaining: CAPACITY_CONFIG.dinner.maxCapacity - dinnerUsed,
+      percentage: Math.round((dinnerUsed / CAPACITY_CONFIG.dinner.maxCapacity) * 100),
+      blocked: CAPACITY_CONFIG.dinner.blocked
+    }
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GOOGLE SERVICES INITIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
 
 // Initialize Google Sheets and Calendar
 async function initializeGoogleServices() {
@@ -118,7 +251,11 @@ async function initializeGoogleServices() {
   }
 }
 
-// FIXED: Add booking without attendees to avoid permission issues
+// ═══════════════════════════════════════════════════════════════════════════
+// BOOKING FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Original booking function (keep for compatibility)
 async function addBooking({ name, party, datetime, source }) {
   if (!sheet || !calendar) {
     throw new Error('Google Services not initialized');
@@ -151,7 +288,6 @@ async function addBooking({ name, party, datetime, source }) {
         dateTime: endDate.toISOString(),
         timeZone: 'Europe/Paris',
       },
-      // REMOVED attendees to fix permission error
     };
 
     const calendarEvent = await calendar.events.insert({
@@ -164,6 +300,35 @@ async function addBooking({ name, party, datetime, source }) {
     console.error('❌ Failed to create calendar event:', calError.message);
     // Don't throw - we still want the sheet entry to succeed
   }
+}
+
+// NEW: Booking function with capacity check
+async function addBookingWithCapacityCheck({ name, party, datetime, source }) {
+  // Vérifier la capacité avant d'ajouter
+  const capacityCheck = await checkCapacityAvailable(datetime, party);
+  
+  if (!capacityCheck.available && source === 'Webflow') {
+    // Bloquer automatiquement les réservations Webflow si complet ou fermé
+    throw new Error(`Service ${capacityCheck.service} non disponible. ${capacityCheck.reason}`);
+  }
+  
+  if (!capacityCheck.available && source === 'Phone') {
+    // Pour le téléphone, proposer la liste d'attente
+    const waitingId = `${Date.now()}_${name}`;
+    waitingList.set(waitingId, {
+      name,
+      party,
+      datetime,
+      source,
+      timestamp: new Date()
+    });
+    
+    throw new Error(`${capacityCheck.reason}: ${capacityCheck.service}. Ajouté en liste d'attente.`);
+  }
+  
+  // Si capacité OK, procéder normalement avec la fonction originale
+  await addBooking({ name, party, datetime, source });
+  return capacityCheck;
 }
 
 // Get calendar events for a date range
@@ -374,77 +539,357 @@ function generatePartySizeButtons() {
   ]);
 }
 
-// IMPROVED: Webflow webhook with better error handling
+// ═══════════════════════════════════════════════════════════════════════════
+// WEBFLOW WEBHOOK WITH CAPACITY MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
 app.post('/webhook', async (req, res) => {
   try {
-    console.log('📲 Webhook received:', req.body);
+    console.log('📲 Webhook reçu:', req.body);
     
     const { name, partySize, dateTime } = req.body;
     
-    // Validate required fields
     if (!name || !partySize || !dateTime) {
-      console.error('❌ Missing required fields:', { name, partySize, dateTime });
-      return res.status(400).json({ error: 'Missing required fields: name, partySize, dateTime' });
+      return res.status(400).json({ 
+        error: 'Champs requis manquants: name, partySize, dateTime' 
+      });
     }
     
-    // Convert to ISO string for consistent storage
+    // Vérifier blocage global
+    if (globalOnlineBookingBlocked) {
+      console.log('🚫 Réservation bloquée - global');
+      return res.status(423).json({ 
+        error: 'Réservations temporairement fermées',
+        message: 'Veuillez appeler directement le restaurant.'
+      });
+    }
+    
     const when = new Date(dateTime).toISOString();
     
-    // Validate the date is valid
     if (isNaN(new Date(when).getTime())) {
-      console.error('❌ Invalid date format:', dateTime);
-      return res.status(400).json({ error: 'Invalid date format' });
+      return res.status(400).json({ error: 'Format de date invalide' });
     }
     
-    console.log('✅ Processing reservation:', { name, party: partySize, datetime: when, source: 'Webflow' });
+    console.log('✅ Traitement réservation:', { name, party: partySize, datetime: when, source: 'Webflow' });
     
-    // Add to sheets and calendar
-    await addBooking({ 
-      name, 
-      party: parseInt(partySize), 
-      datetime: when, 
-      source: 'Webflow' 
-    });
-    
-    // Send Telegram notification
-    const dateDisplay = new Date(when).toLocaleDateString('fr-FR', { 
-      weekday: 'long', 
-      day: 'numeric', 
-      month: 'long',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-    
-    await notifyTelegram(
-      `📲 *Nouvelle réservation web*\n• ${dateDisplay}\n• ${partySize} personne(s): ${name}`
-    );
-    
-    console.log('✅ Reservation processed successfully');
-    res.status(200).json({ 
-      success: true, 
-      message: 'Reservation created successfully',
-      reservation: { name, partySize, dateTime: when }
-    });
+    try {
+      const capacityResult = await addBookingWithCapacityCheck({ 
+        name, 
+        party: parseInt(partySize), 
+        datetime: when, 
+        source: 'Webflow' 
+      });
+      
+      const dateDisplay = new Date(when).toLocaleDateString('fr-FR', { 
+        weekday: 'long', day: 'numeric', month: 'long',
+        hour: '2-digit', minute: '2-digit'
+      });
+      
+      await notifyTelegram(
+        `📲 *Nouvelle réservation web*\n• ${dateDisplay}\n• ${partySize} personne(s): ${name}\n• Places restantes ${capacityResult.service}: ${capacityResult.remaining}`
+      );
+      
+      console.log('✅ Réservation créée avec succès');
+      res.status(200).json({ 
+        success: true, 
+        message: 'Réservation créée',
+        reservation: { name, partySize, dateTime: when },
+        remaining: capacityResult.remaining,
+        service: capacityResult.service
+      });
+      
+    } catch (capacityError) {
+      console.log('⚠️ Réservation refusée:', capacityError.message);
+      return res.status(409).json({
+        error: 'Service non disponible',
+        message: capacityError.message,
+        fullBooking: true
+      });
+    }
     
   } catch (err) {
-    console.error('❌ Webhook error:', err);
+    console.error('❌ Erreur webhook:', err);
     res.status(500).json({ 
-      error: 'Internal server error', 
+      error: 'Erreur serveur', 
       details: err.message 
     });
   }
 });
 
-// Reply keyboard with buttons
+// ═══════════════════════════════════════════════════════════════════════════
+// TELEGRAM BOT COMMANDS AND HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Reply keyboard with buttons (UPDATED WITH CAPACITY MANAGEMENT)
 const mainKeyboard = Markup.keyboard([
   ['➕ Ajouter réservation', "📋 Voir réservations aujourd'hui"],
-  ['📅 Voir calendrier', '📊 Voir resa de la semaine']
+  ['📅 Voir calendrier', '📊 Voir resa de la semaine'],
+  ['📊 Places restantes', '⚙️ Gestion capacité'],
+  ['🚫 Bloquer toutes résa en ligne', '✅ Activer toutes résa en ligne']
 ]).resize();
 
 // /start
 bot.start(ctx =>
   ctx.reply('Bienvenue chez La Savane! Choisissez une action:', mainKeyboard)
 );
+
+// ── CAPACITY MANAGEMENT COMMANDS ─────────────────────────────────────────────
+
+// Commande: Places restantes
+bot.hears('📊 Places restantes', async ctx => {
+  try {
+    const status = await getTodayCapacityStatus();
+    
+    let message = "*📊 PLACES RESTANTES AUJOURD'HUI*\n\n";
+    
+    // Déjeuner
+    message += `🍽️ **DÉJEUNER (12h-14h)**\n`;
+    if (status.lunch.blocked) {
+      message += `🚫 SERVICE FERMÉ\n\n`;
+    } else {
+      message += `• Occupé: ${status.lunch.used}/${status.lunch.max} places (${status.lunch.percentage}%)\n`;
+      message += `• **Restantes: ${status.lunch.remaining} places**\n`;
+      message += status.lunch.remaining === 0 ? "🔴 COMPLET\n\n" : 
+                 status.lunch.remaining <= 10 ? "🟡 BIENTÔT COMPLET\n\n" : "🟢 DISPONIBLE\n\n";
+    }
+    
+    // Dîner
+    message += `🌙 **DÎNER (19h-22h)**\n`;
+    if (status.dinner.blocked) {
+      message += `🚫 SERVICE FERMÉ\n\n`;
+    } else {
+      message += `• Occupé: ${status.dinner.used}/${status.dinner.max} places (${status.dinner.percentage}%)\n`;
+      message += `• **Restantes: ${status.dinner.remaining} places**\n`;
+      message += status.dinner.remaining === 0 ? "🔴 COMPLET\n\n" : 
+                 status.dinner.remaining <= 10 ? "🟡 BIENTÔT COMPLET\n\n" : "🟢 DISPONIBLE\n\n";
+    }
+    
+    // État réservations en ligne
+    message += `🌐 **RÉSERVATIONS EN LIGNE**\n`;
+    message += globalOnlineBookingBlocked ? "🚫 TOUTES BLOQUÉES" : "✅ ACTIVES";
+    
+    // Liste d'attente
+    if (waitingList.size > 0) {
+      message += `\n\n⏳ **LISTE D'ATTENTE**: ${waitingList.size} demande(s)`;
+    }
+    
+    ctx.reply(message, { parse_mode: 'Markdown' });
+    
+  } catch (error) {
+    console.error('Erreur places restantes:', error);
+    ctx.reply('❌ Erreur lors du calcul des places restantes');
+  }
+});
+
+// Commande: Gestion capacité
+bot.hears('⚙️ Gestion capacité', ctx => {
+  const capacityKeyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('📊 Voir statut complet', 'capacity_status')],
+    [
+      Markup.button.callback('🍽️ Gérer déjeuner', 'manage_lunch'),
+      Markup.button.callback('🌙 Gérer dîner', 'manage_dinner')
+    ],
+    [Markup.button.callback('📋 Liste d\'attente', 'waitlist_view')],
+    [Markup.button.callback('🔙 Retour menu', 'back_main')]
+  ]);
+  
+  ctx.reply('⚙️ **GESTION DE CAPACITÉ**\n\nChoisissez une option:', {
+    parse_mode: 'Markdown',
+    ...capacityKeyboard
+  });
+});
+
+// Commande: Bloquer toutes réservations en ligne
+bot.hears('🚫 Bloquer toutes résa en ligne', ctx => {
+  globalOnlineBookingBlocked = true;
+  ctx.reply('🚫 **TOUTES LES RÉSERVATIONS EN LIGNE BLOQUÉES**\n\nWebflow complètement désactivé.', {
+    parse_mode: 'Markdown'
+  });
+});
+
+// Commande: Activer toutes réservations en ligne
+bot.hears('✅ Activer toutes résa en ligne', ctx => {
+  globalOnlineBookingBlocked = false;
+  ctx.reply('✅ **TOUTES LES RÉSERVATIONS EN LIGNE ACTIVÉES**\n\nWebflow réactivé (selon capacités).', {
+    parse_mode: 'Markdown'
+  });
+});
+
+// ── CAPACITY MANAGEMENT INLINE CALLBACKS ────────────────────────────────────
+
+// Voir statut complet
+bot.action('capacity_status', async ctx => {
+  const status = await getTodayCapacityStatus();
+  
+  let message = `📊 **STATUT COMPLET**\n\n`;
+  
+  // Configuration
+  message += `⚙️ **CONFIGURATION**\n`;
+  message += `🍽️ Déjeuner: ${CAPACITY_CONFIG.lunch.maxCapacity} places (${CAPACITY_CONFIG.lunch.startHour}h-${CAPACITY_CONFIG.lunch.endHour}h)\n`;
+  message += `🌙 Dîner: ${CAPACITY_CONFIG.dinner.maxCapacity} places (${CAPACITY_CONFIG.dinner.startHour}h-${CAPACITY_CONFIG.dinner.endHour}h)\n\n`;
+  
+  // Statut aujourd'hui
+  message += `📅 **AUJOURD'HUI**\n`;
+  message += `🍽️ Déjeuner: ${status.lunch.used}/${status.lunch.max} (${status.lunch.remaining} libres)\n`;
+  message += `🌙 Dîner: ${status.dinner.used}/${status.dinner.max} (${status.dinner.remaining} libres)\n\n`;
+  
+  // État des services
+  message += `🚦 **ÉTAT DES SERVICES**\n`;
+  message += `🍽️ Déjeuner: ${status.lunch.blocked ? '🚫 FERMÉ' : '✅ OUVERT'}\n`;
+  message += `🌙 Dîner: ${status.dinner.blocked ? '🚫 FERMÉ' : '✅ OUVERT'}\n`;
+  message += `🌐 Global: ${globalOnlineBookingBlocked ? '🚫 BLOQUÉ' : '✅ ACTIF'}`;
+  
+  ctx.editMessageText(message, { parse_mode: 'Markdown' });
+  ctx.answerCbQuery();
+});
+
+// Gestion déjeuner
+bot.action('manage_lunch', ctx => {
+  const lunchKeyboard = Markup.inlineKeyboard([
+    [
+      Markup.button.callback(
+        CAPACITY_CONFIG.lunch.blocked ? '✅ Ouvrir déjeuner' : '🚫 Fermer déjeuner', 
+        'toggle_lunch'
+      )
+    ],
+    [Markup.button.callback('📝 Modifier capacité', 'edit_lunch_capacity')],
+    [Markup.button.callback('🔙 Retour', 'capacity_status')]
+  ]);
+  
+  const status = CAPACITY_CONFIG.lunch.blocked ? '🚫 FERMÉ' : '✅ OUVERT';
+  
+  ctx.editMessageText(
+    `🍽️ **GESTION DÉJEUNER**\n\n` +
+    `Capacité: ${CAPACITY_CONFIG.lunch.maxCapacity} places\n` +
+    `Horaires: ${CAPACITY_CONFIG.lunch.startHour}h-${CAPACITY_CONFIG.lunch.endHour}h\n` +
+    `Statut: ${status}\n\n` +
+    `Choisissez une action:`,
+    { parse_mode: 'Markdown', ...lunchKeyboard }
+  );
+  ctx.answerCbQuery();
+});
+
+// Gestion dîner
+bot.action('manage_dinner', ctx => {
+  const dinnerKeyboard = Markup.inlineKeyboard([
+    [
+      Markup.button.callback(
+        CAPACITY_CONFIG.dinner.blocked ? '✅ Ouvrir dîner' : '🚫 Fermer dîner', 
+        'toggle_dinner'
+      )
+    ],
+    [Markup.button.callback('📝 Modifier capacité', 'edit_dinner_capacity')],
+    [Markup.button.callback('🔙 Retour', 'capacity_status')]
+  ]);
+  
+  const status = CAPACITY_CONFIG.dinner.blocked ? '🚫 FERMÉ' : '✅ OUVERT';
+  
+  ctx.editMessageText(
+    `🌙 **GESTION DÎNER**\n\n` +
+    `Capacité: ${CAPACITY_CONFIG.dinner.maxCapacity} places\n` +
+    `Horaires: ${CAPACITY_CONFIG.dinner.startHour}h-${CAPACITY_CONFIG.dinner.endHour}h\n` +
+    `Statut: ${status}\n\n` +
+    `Choisissez une action:`,
+    { parse_mode: 'Markdown', ...dinnerKeyboard }
+  );
+  ctx.answerCbQuery();
+});
+
+// Toggle services
+bot.action('toggle_lunch', async ctx => {
+  CAPACITY_CONFIG.lunch.blocked = !CAPACITY_CONFIG.lunch.blocked;
+  const status = CAPACITY_CONFIG.lunch.blocked ? 'FERMÉ' : 'OUVERT';
+  
+  ctx.answerCbQuery(`Déjeuner maintenant ${status}`);
+  
+  ctx.editMessageText(
+    `🍽️ Service déjeuner maintenant **${status}**\n\n` +
+    `Les réservations en ligne pour le déjeuner sont ${CAPACITY_CONFIG.lunch.blocked ? 'bloquées' : 'autorisées'}.`,
+    { parse_mode: 'Markdown' }
+  );
+  
+  await notifyTelegram(
+    `🍽️ *Service déjeuner ${status}*\n• Par: ${ctx.from.first_name || ctx.from.username}\n• Réservations en ligne: ${CAPACITY_CONFIG.lunch.blocked ? 'BLOQUÉES' : 'AUTORISÉES'}`
+  );
+});
+
+bot.action('toggle_dinner', async ctx => {
+  CAPACITY_CONFIG.dinner.blocked = !CAPACITY_CONFIG.dinner.blocked;
+  const status = CAPACITY_CONFIG.dinner.blocked ? 'FERMÉ' : 'OUVERT';
+  
+  ctx.answerCbQuery(`Dîner maintenant ${status}`);
+  
+  ctx.editMessageText(
+    `🌙 Service dîner maintenant **${status}**\n\n` +
+    `Les réservations en ligne pour le dîner sont ${CAPACITY_CONFIG.dinner.blocked ? 'bloquées' : 'autorisées'}.`,
+    { parse_mode: 'Markdown' }
+  );
+  
+  await notifyTelegram(
+    `🌙 *Service dîner ${status}*\n• Par: ${ctx.from.first_name || ctx.from.username}\n• Réservations en ligne: ${CAPACITY_CONFIG.dinner.blocked ? 'BLOQUÉES' : 'AUTORISÉES'}`
+  );
+});
+
+// Modifier capacités
+bot.action('edit_lunch_capacity', ctx => {
+  ctx.editMessageText(
+    `🍽️ **Modifier capacité déjeuner**\n\nCapacité actuelle: ${CAPACITY_CONFIG.lunch.maxCapacity} personnes\n\nEnvoyez la nouvelle capacité:`,
+    { parse_mode: 'Markdown' }
+  );
+  
+  const userId = ctx.from.id;
+  if (!userSessions.has(userId)) {
+    userSessions.set(userId, {});
+  }
+  userSessions.get(userId).waitingForCapacityChange = 'lunch';
+  ctx.answerCbQuery();
+});
+
+bot.action('edit_dinner_capacity', ctx => {
+  ctx.editMessageText(
+    `🌙 **Modifier capacité dîner**\n\nCapacité actuelle: ${CAPACITY_CONFIG.dinner.maxCapacity} personnes\n\nEnvoyez la nouvelle capacité:`,
+    { parse_mode: 'Markdown' }
+  );
+  
+  const userId = ctx.from.id;
+  if (!userSessions.has(userId)) {
+    userSessions.set(userId, {});
+  }
+  userSessions.get(userId).waitingForCapacityChange = 'dinner';
+  ctx.answerCbQuery();
+});
+
+// Liste d'attente
+bot.action('waitlist_view', ctx => {
+  if (waitingList.size === 0) {
+    ctx.editMessageText('📋 **LISTE D\'ATTENTE VIDE**', { parse_mode: 'Markdown' });
+  } else {
+    let message = `📋 **LISTE D'ATTENTE** (${waitingList.size})\n\n`;
+    
+    Array.from(waitingList.entries()).forEach(([id, request], index) => {
+      const date = new Date(request.datetime).toLocaleDateString('fr-FR');
+      const time = new Date(request.datetime).toLocaleTimeString('fr-FR', { 
+        hour: '2-digit', minute: '2-digit' 
+      });
+      
+      message += `**${index + 1}.** ${request.name}\n`;
+      message += `   📅 ${date} ${time}\n`;
+      message += `   👥 ${request.party} pers. (${request.source})\n\n`;
+    });
+    
+    ctx.editMessageText(message, { parse_mode: 'Markdown' });
+  }
+  ctx.answerCbQuery();
+});
+
+// Retour menu
+bot.action('back_main', ctx => {
+  ctx.deleteMessage();
+  ctx.reply('Menu principal:', mainKeyboard);
+  ctx.answerCbQuery();
+});
+
+// ── ORIGINAL BOOKING COMMANDS ────────────────────────────────────────────────
 
 // Ajouter réservation
 bot.hears('➕ Ajouter réservation', ctx => {
@@ -641,6 +1086,8 @@ bot.command('list', async ctx => {
   }
 });
 
+// ── BOOKING FLOW HANDLERS ────────────────────────────────────────────────────
+
 // Handle calendar date selection
 bot.action(/^date_(.+)$/, ctx => {
   const selectedDate = ctx.match[1];
@@ -747,58 +1194,101 @@ bot.action(/^month_/, ctx => {
   ctx.answerCbQuery();
 });
 
-// Handle name input
+// ── TEXT INPUT HANDLER (UPDATED WITH CAPACITY MANAGEMENT) ────────────────────
+
+// Handle name input and capacity changes
 bot.on('text', async ctx => {
   const userId = ctx.from.id;
   const session = userSessions.get(userId);
   
+  // CAPACITY MANAGEMENT: Handle capacity changes
+  if (session && session.waitingForCapacityChange) {
+    const newCapacity = parseInt(ctx.message.text);
+    
+    if (isNaN(newCapacity) || newCapacity <= 0) {
+      return ctx.reply('❌ Entrez un nombre valide > 0');
+    }
+    
+    const serviceType = session.waitingForCapacityChange;
+    const oldCapacity = CAPACITY_CONFIG[serviceType].maxCapacity;
+    
+    CAPACITY_CONFIG[serviceType].maxCapacity = newCapacity;
+    delete session.waitingForCapacityChange;
+    
+    const serviceName = serviceType === 'lunch' ? 'déjeuner' : 'dîner';
+    
+    ctx.reply(
+      `✅ **Capacité ${serviceName} modifiée**\n\n` +
+      `${oldCapacity} → ${newCapacity} personnes`,
+      { parse_mode: 'Markdown', ...mainKeyboard }
+    );
+    
+    await notifyTelegram(
+      `⚙️ *Capacité ${serviceName} modifiée*\n• ${oldCapacity} → ${newCapacity}\n• Par: ${ctx.from.first_name || ctx.from.username}`
+    );
+    
+    return;
+  }
+  
+  // BOOKING: Handle name input for reservations
   if (session && session.waitingForName) {
     const name = ctx.message.text;
     
     try {
       const dateTime = `${session.selectedDate}T${session.selectedTime}:00`;
-      console.log('DEBUG: Saving reservation:', { 
+      console.log('DEBUG: Tentative de réservation:', { 
         selectedDate: session.selectedDate, 
         selectedTime: session.selectedTime, 
         dateTime, 
-        today: getTodayString() 
+        party: session.partySize,
+        name
       });
       
-      await addBooking({
-        name,
-        party: parseInt(session.partySize),
-        datetime: dateTime,
-        source: 'Phone'
-      });
-      
-      console.log('✅ Reservation saved successfully');
-      
-      userSessions.delete(userId);
-      
-      const dateObj = new Date(session.selectedDate);
-      const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
-        weekday: 'long', 
-        day: 'numeric', 
-        month: 'long'
-      });
-      
-      ctx.reply(
-        `✅ *Réservation confirmée!*\n\n` +
-        `📅 Date: ${dateDisplay}\n` +
-        `🕐 Heure: ${session.selectedTime}\n` +
-        `👥 Personnes: ${session.partySize}\n` +
-        `📝 Nom: ${name}\n\n` +
-        `✨ Ajoutée au calendrier et aux feuilles de calcul! 🍽️`,
-        { parse_mode: 'Markdown', ...mainKeyboard }
-      );
-      
-      await notifyTelegram(
-        `📞 *Nouvelle réservation téléphone*\n• ${dateDisplay} ${session.selectedTime}\n• ${session.partySize}-personnes: ${name}`
-      );
+      // Use capacity-aware booking function
+      try {
+        const capacityResult = await addBookingWithCapacityCheck({
+          name,
+          party: parseInt(session.partySize),
+          datetime: dateTime,
+          source: 'Phone'
+        });
+        
+        userSessions.delete(userId);
+        
+        const dateObj = new Date(session.selectedDate);
+        const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
+          weekday: 'long', 
+          day: 'numeric', 
+          month: 'long'
+        });
+        
+        ctx.reply(
+          `✅ *Réservation confirmée!*\n\n` +
+          `📅 ${dateDisplay}\n🕐 ${session.selectedTime}\n👥 ${session.partySize}\n📝 ${name}\n` +
+          `📊 Places restantes ${capacityResult.service}: ${capacityResult.remaining}`,
+          { parse_mode: 'Markdown', ...mainKeyboard }
+        );
+        
+        await notifyTelegram(
+          `📞 *Nouvelle réservation*\n• ${dateDisplay} ${session.selectedTime}\n• ${session.partySize} pers.: ${name}\n• Restantes ${capacityResult.service}: ${capacityResult.remaining}`
+        );
+        
+      } catch (capacityError) {
+        ctx.reply(
+          `⚠️ ${capacityError.message}\n\nNous vous contacterons si une place se libère.`,
+          { ...mainKeyboard }
+        );
+        
+        userSessions.delete(userId);
+        
+        await notifyTelegram(
+          `⏳ *Liste d'attente*\n• ${name} - ${session.partySize} pers.\n• ${session.selectedDate} ${session.selectedTime}`
+        );
+      }
       
     } catch (error) {
-      console.error('Error creating reservation:', error);
-      ctx.reply('❌ Erreur lors de la création de la réservation. Veuillez réessayer.');
+      console.error('Erreur création réservation:', error);
+      ctx.reply('❌ Erreur. Réessayez.');
       userSessions.delete(userId);
     }
   }
@@ -809,6 +1299,10 @@ bot.catch((err, ctx) => {
   console.error('Bot error:', err);
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// APPLICATION STARTUP
+// ═══════════════════════════════════════════════════════════════════════════
+
 // Initialize and start the application
 async function startApp() {
   try {
@@ -817,11 +1311,15 @@ async function startApp() {
     // Launch bot
     await bot.launch();
     console.log('🤖 Telegram bot started successfully');
+    console.log('📊 Capacity management system active');
+    console.log(`🍽️ Lunch capacity: ${CAPACITY_CONFIG.lunch.maxCapacity} (${CAPACITY_CONFIG.lunch.startHour}h-${CAPACITY_CONFIG.lunch.endHour}h)`);
+    console.log(`🌙 Dinner capacity: ${CAPACITY_CONFIG.dinner.maxCapacity} (${CAPACITY_CONFIG.dinner.startHour}h-${CAPACITY_CONFIG.dinner.endHour}h)`);
     
     // Start Express server
     app.listen(PORT, () => {
       console.log(`🚀 Express server listening on port ${PORT}`);
       console.log(`📍 Health check: http://localhost:${PORT}`);
+      console.log(`🌐 Webhook endpoint: http://localhost:${PORT}/webhook`);
     });
     
   } catch (error) {
