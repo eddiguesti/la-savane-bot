@@ -1384,7 +1384,7 @@ async function startApp() {
     await initializeGoogleServices();
     
     // Launch bot
-    await bot.launch();
+    await bot.launch({ dropPendingUpdates: true });
     console.log('🤖 Telegram bot started successfully');
     console.log('📊 Capacity management system active');
     console.log(`🍽️ Lunch capacity: ${CAPACITY_CONFIG.lunch.maxCapacity} (${CAPACITY_CONFIG.lunch.startHour}h-${CAPACITY_CONFIG.lunch.endHour}h)`);
