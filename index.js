@@ -1416,3 +1416,6 @@ process.once('SIGTERM', () => {
 
 // Start the application
 startApp();
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
