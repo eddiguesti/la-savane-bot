@@ -76,7 +76,7 @@ let serviceAccountAuth;
 const userSessions = new Map();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CAPACITY MANAGEMENT FUNCTIONS - FIXED VERSION
+// CAPACITY MANAGEMENT FUNCTIONS - FIXED VERSION WITH PARTYSIZE
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Déterminer le service (déjeuner/dîner) selon l'heure
@@ -91,7 +91,7 @@ function getServiceType(dateTime) {
   return null; // Hors heures de service
 }
 
-// FIXED: Calculer la capacité utilisée pour un service donné avec debug
+// FIXED: Calculer la capacité utilisée pour un service donné avec PartySize
 async function getUsedCapacity(date, serviceType) {
   try {
     if (!sheet) {
@@ -114,12 +114,12 @@ async function getUsedCapacity(date, serviceType) {
     
     rows.forEach((row, index) => {
       const dateTime = row.get('DateTime');
-      const party = row.get('Party');
+      const party = row.get('PartySize'); // FIXED: Changed from 'Party' to 'PartySize'
       const name = row.get('Name');
       
       // Debug: afficher quelques lignes pour diagnostiquer
       if (index < 3 || dateTime?.startsWith(dateStr)) {
-        console.log(`🔍 DEBUG Row ${index}: DateTime="${dateTime}", Party="${party}", Name="${name}"`);
+        console.log(`🔍 DEBUG Row ${index}: DateTime="${dateTime}", PartySize="${party}", Name="${name}"`);
       }
       
       if (dateTime && dateTime.startsWith(dateStr)) {
@@ -297,11 +297,11 @@ async function addBooking({ name, party, datetime, source }) {
   
   console.log(`📝 Adding booking: ${name}, ${party} people, ${datetime}, via ${source}`);
   
-  // Add to Google Sheets
+  // Add to Google Sheets - FIXED: Use PartySize column name
   await sheet.addRow({
     Timestamp: new Date().toISOString(),
     Name: name,
-    Party: party,
+    PartySize: party, // FIXED: Changed from 'Party' to 'PartySize'
     DateTime: datetime,
     Source: source
   });
@@ -738,12 +738,12 @@ bot.hears('🔍 Debug sheet', async ctx => {
       const timestamp = row.get('Timestamp') || 'N/A';
       const dateTime = row.get('DateTime') || 'N/A';
       const name = row.get('Name') || 'N/A';
-      const party = row.get('Party') || 'N/A';
+      const partySize = row.get('PartySize') || 'N/A'; // FIXED: Use PartySize
       const source = row.get('Source') || 'N/A';
       
       message += `**${index + 1}.** ${name}\n`;
       message += `   📅 DateTime: ${dateTime}\n`;
-      message += `   👥 Party: ${party}\n`;
+      message += `   👥 PartySize: ${partySize}\n`;
       message += `   📱 Source: ${source}\n`;
       message += `   ⏰ Timestamp: ${timestamp}\n\n`;
     });
@@ -971,7 +971,7 @@ bot.hears('➕ Ajouter réservation', ctx => {
   ctx.reply('📅 Choisissez une date pour votre réservation:', generateCalendar());
 });
 
-// Voir réservations aujourd'hui
+// Voir réservations aujourd'hui - FIXED: Use PartySize
 bot.hears("📋 Voir réservations aujourd'hui", async ctx => {
   try {
     if (!sheet) {
@@ -1002,7 +1002,7 @@ bot.hears("📋 Voir réservations aujourd'hui", async ctx => {
       const dateTime = r.get('DateTime');
       const t = new Date(dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const name = r.get('Name');
-      const party = r.get('Party');
+      const party = r.get('PartySize'); // FIXED: Use PartySize instead of Party
       return `– ${t}, ${party}-personnes: ${name}`;
     });
     
@@ -1127,7 +1127,7 @@ bot.command('new', async ctx => {
   }
 });
 
-// /list
+// /list - FIXED: Use PartySize
 bot.command('list', async ctx => {
   try {
     if (!sheet) {
@@ -1150,7 +1150,7 @@ bot.command('list', async ctx => {
       const dateTime = r.get('DateTime');
       const t = new Date(dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const name = r.get('Name');
-      const party = r.get('Party');
+      const party = r.get('PartySize'); // FIXED: Use PartySize instead of Party
       return `– ${t}, ${party}-personnes: ${name}`;
     });
     
