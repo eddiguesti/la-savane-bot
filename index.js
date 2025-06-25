@@ -1,4 +1,4 @@
-/* index.js - PRODUCTION READY VERSION WITH CAPACITY MANAGEMENT
+/* index.js - PRODUCTION READY VERSION WITH FIXED CAPACITY MANAGEMENT
  * Telegram Booking Bot using Google Sheets + Google Calendar + Capacity Control
  * ========================================
  */
@@ -76,7 +76,7 @@ let serviceAccountAuth;
 const userSessions = new Map();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CAPACITY MANAGEMENT FUNCTIONS
+// CAPACITY MANAGEMENT FUNCTIONS - FIXED VERSION
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Déterminer le service (déjeuner/dîner) selon l'heure
@@ -91,10 +91,13 @@ function getServiceType(dateTime) {
   return null; // Hors heures de service
 }
 
-// Calculer la capacité utilisée pour un service donné
+// FIXED: Calculer la capacité utilisée pour un service donné avec debug
 async function getUsedCapacity(date, serviceType) {
   try {
-    if (!sheet) return 0;
+    if (!sheet) {
+      console.log('❌ DEBUG: Sheet not initialized');
+      return 0;
+    }
     
     await sheet.loadHeaderRow();
     const rows = await sheet.getRows();
@@ -102,21 +105,52 @@ async function getUsedCapacity(date, serviceType) {
     const dateStr = date.toISOString().split('T')[0];
     const service = CAPACITY_CONFIG[serviceType];
     
-    let totalPeople = 0;
+    console.log(`🔍 DEBUG: Looking for ${serviceType} reservations on ${dateStr}`);
+    console.log(`🔍 DEBUG: Service hours: ${service.startHour}h-${service.endHour}h`);
+    console.log(`🔍 DEBUG: Total rows in sheet: ${rows.length}`);
     
-    rows.forEach(row => {
+    let totalPeople = 0;
+    let matchingReservations = [];
+    
+    rows.forEach((row, index) => {
       const dateTime = row.get('DateTime');
+      const party = row.get('Party');
+      const name = row.get('Name');
+      
+      // Debug: afficher quelques lignes pour diagnostiquer
+      if (index < 3 || dateTime?.startsWith(dateStr)) {
+        console.log(`🔍 DEBUG Row ${index}: DateTime="${dateTime}", Party="${party}", Name="${name}"`);
+      }
+      
       if (dateTime && dateTime.startsWith(dateStr)) {
-        const reservationHour = new Date(dateTime).getHours();
+        const reservationDate = new Date(dateTime);
+        const reservationHour = reservationDate.getHours();
+        
+        console.log(`📅 DEBUG: Found reservation on ${dateStr} at hour ${reservationHour}`);
+        
         if (reservationHour >= service.startHour && reservationHour <= service.endHour) {
-          totalPeople += parseInt(row.get('Party') || 0);
+          const partySize = parseInt(party || 0);
+          totalPeople += partySize;
+          
+          matchingReservations.push({
+            name: name,
+            time: reservationDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+            party: partySize
+          });
+          
+          console.log(`✅ DEBUG: Added ${partySize} people for ${name} at ${reservationDate.toLocaleTimeString()}`);
+        } else {
+          console.log(`❌ DEBUG: Reservation at ${reservationHour}h is outside ${serviceType} hours (${service.startHour}h-${service.endHour}h)`);
         }
       }
     });
     
+    console.log(`📊 DEBUG: Total people for ${serviceType}: ${totalPeople}`);
+    console.log(`📊 DEBUG: Matching reservations:`, matchingReservations);
+    
     return totalPeople;
   } catch (error) {
-    console.error('Erreur calcul capacité:', error);
+    console.error('❌ Erreur calcul capacité:', error);
     return 0;
   }
 }
@@ -625,7 +659,8 @@ const mainKeyboard = Markup.keyboard([
   ['➕ Ajouter réservation', "📋 Voir réservations aujourd'hui"],
   ['📅 Voir calendrier', '📊 Voir resa de la semaine'],
   ['📊 Places restantes', '⚙️ Gestion capacité'],
-  ['🚫 Bloquer toutes résa en ligne', '✅ Activer toutes résa en ligne']
+  ['🚫 Bloquer toutes résa en ligne', '✅ Activer toutes résa en ligne'],
+  ['🔍 Debug sheet'] // Added debug button
 ]).resize();
 
 // /start
@@ -678,6 +713,46 @@ bot.hears('📊 Places restantes', async ctx => {
   } catch (error) {
     console.error('Erreur places restantes:', error);
     ctx.reply('❌ Erreur lors du calcul des places restantes');
+  }
+});
+
+// NEW: Debug sheet command
+bot.hears('🔍 Debug sheet', async ctx => {
+  try {
+    if (!sheet) {
+      return ctx.reply('❌ Sheet non initialisé');
+    }
+    
+    await sheet.loadHeaderRow();
+    const rows = await sheet.getRows();
+    
+    let message = `🔍 **DEBUG GOOGLE SHEET**\n\n`;
+    message += `📊 Total lignes: ${rows.length}\n`;
+    message += `📋 Headers: ${sheet.headerValues.join(', ')}\n\n`;
+    
+    // Afficher les 5 dernières réservations
+    const recentRows = rows.slice(-5);
+    message += `📅 **5 dernières réservations:**\n`;
+    
+    recentRows.forEach((row, index) => {
+      const timestamp = row.get('Timestamp') || 'N/A';
+      const dateTime = row.get('DateTime') || 'N/A';
+      const name = row.get('Name') || 'N/A';
+      const party = row.get('Party') || 'N/A';
+      const source = row.get('Source') || 'N/A';
+      
+      message += `**${index + 1}.** ${name}\n`;
+      message += `   📅 DateTime: ${dateTime}\n`;
+      message += `   👥 Party: ${party}\n`;
+      message += `   📱 Source: ${source}\n`;
+      message += `   ⏰ Timestamp: ${timestamp}\n\n`;
+    });
+    
+    ctx.reply(message, { parse_mode: 'Markdown' });
+    
+  } catch (error) {
+    console.error('Debug sheet error:', error);
+    ctx.reply(`❌ Erreur debug: ${error.message}`);
   }
 });
 
