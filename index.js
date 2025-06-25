@@ -1390,12 +1390,13 @@ async function startApp() {
     console.log(`🍽️ Lunch capacity: ${CAPACITY_CONFIG.lunch.maxCapacity} (${CAPACITY_CONFIG.lunch.startHour}h-${CAPACITY_CONFIG.lunch.endHour}h)`);
     console.log(`🌙 Dinner capacity: ${CAPACITY_CONFIG.dinner.maxCapacity} (${CAPACITY_CONFIG.dinner.startHour}h-${CAPACITY_CONFIG.dinner.endHour}h)`);
     
-    // Start Express server
-    app.listen(PORT, () => {
-      console.log(`🚀 Express server listening on port ${PORT}`);
-      console.log(`📍 Health check: http://localhost:${PORT}`);
-      console.log(`🌐 Webhook endpoint: http://localhost:${PORT}/webhook`);
-    });
+// Start Express server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Express server listening on 0.0.0.0:${PORT}`);
+  console.log(`📍 Health check: http://0.0.0.0:${PORT}`);
+  console.log(`🌐 Webhook endpoint: http://0.0.0.0:${PORT}/webhook`);
+});
+
     
   } catch (error) {
     console.error('❌ Failed to start application:', error);
