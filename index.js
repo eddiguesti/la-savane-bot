@@ -1,6 +1,6 @@
-/* index.js - SAFE ENHANCED VERSION WITH BACKWARD COMPATIBILITY
+/* index.js - COMPLETE SAFE ENHANCED VERSION WITH BACKWARD COMPATIBILITY
  * Telegram Booking Bot using Google Sheets + Google Calendar + Capacity Control
- * Now with Phone Number and Email support - SAFE VERSION
+ * Now with Phone Number and Email support - COMPLETE VERSION
  * ========================================
  */
 
@@ -870,9 +870,6 @@ bot.hears('🔍 Debug sheet', async ctx => {
   }
 });
 
-// Rest of the commands remain exactly the same as the original...
-// [Including all capacity management, booking commands, etc.]
-
 // Commande: Gestion capacité
 bot.hears('⚙️ Gestion capacité', ctx => {
   const capacityKeyboard = Markup.inlineKeyboard([
@@ -907,8 +904,188 @@ bot.hears('✅ Activer toutes résa en ligne', ctx => {
   });
 });
 
-// All the inline callback handlers remain the same...
-[/* Same capacity management callbacks as original */]
+// ── CAPACITY MANAGEMENT INLINE CALLBACKS ────────────────────────────────────
+
+// Voir statut complet
+bot.action('capacity_status', async ctx => {
+  const status = await getTodayCapacityStatus();
+  
+  let message = `📊 **STATUT COMPLET**\n\n`;
+  
+  // Configuration
+  message += `⚙️ **CONFIGURATION**\n`;
+  message += `🍽️ Déjeuner: ${CAPACITY_CONFIG.lunch.maxCapacity} places (${CAPACITY_CONFIG.lunch.startHour}h-${CAPACITY_CONFIG.lunch.endHour}h)\n`;
+  message += `🌙 Dîner: ${CAPACITY_CONFIG.dinner.maxCapacity} places (${CAPACITY_CONFIG.dinner.startHour}h-${CAPACITY_CONFIG.dinner.endHour}h)\n\n`;
+  
+  // Statut aujourd'hui
+  message += `📅 **AUJOURD'HUI**\n`;
+  message += `🍽️ Déjeuner: ${status.lunch.used}/${status.lunch.max} (${status.lunch.remaining} libres)\n`;
+  message += `🌙 Dîner: ${status.dinner.used}/${status.dinner.max} (${status.dinner.remaining} libres)\n\n`;
+  
+  // État des services
+  message += `🚦 **ÉTAT DES SERVICES**\n`;
+  message += `🍽️ Déjeuner: ${status.lunch.blocked ? '🚫 FERMÉ' : '✅ OUVERT'}\n`;
+  message += `🌙 Dîner: ${status.dinner.blocked ? '🚫 FERMÉ' : '✅ OUVERT'}\n`;
+  message += `🌐 Global: ${globalOnlineBookingBlocked ? '🚫 BLOQUÉ' : '✅ ACTIF'}`;
+  
+  ctx.editMessageText(message, { parse_mode: 'Markdown' });
+  ctx.answerCbQuery();
+});
+
+// Gestion déjeuner
+bot.action('manage_lunch', ctx => {
+  const lunchKeyboard = Markup.inlineKeyboard([
+    [
+      Markup.button.callback(
+        CAPACITY_CONFIG.lunch.blocked ? '✅ Ouvrir déjeuner' : '🚫 Fermer déjeuner', 
+        'toggle_lunch'
+      )
+    ],
+    [Markup.button.callback('📝 Modifier capacité', 'edit_lunch_capacity')],
+    [Markup.button.callback('🔙 Retour', 'capacity_status')]
+  ]);
+  
+  const status = CAPACITY_CONFIG.lunch.blocked ? '🚫 FERMÉ' : '✅ OUVERT';
+  
+  ctx.editMessageText(
+    `🍽️ **GESTION DÉJEUNER**\n\n` +
+    `Capacité: ${CAPACITY_CONFIG.lunch.maxCapacity} places\n` +
+    `Horaires: ${CAPACITY_CONFIG.lunch.startHour}h-${CAPACITY_CONFIG.lunch.endHour}h\n` +
+    `Statut: ${status}\n\n` +
+    `Choisissez une action:`,
+    { parse_mode: 'Markdown', ...lunchKeyboard }
+  );
+  ctx.answerCbQuery();
+});
+
+// Gestion dîner
+bot.action('manage_dinner', ctx => {
+  const dinnerKeyboard = Markup.inlineKeyboard([
+    [
+      Markup.button.callback(
+        CAPACITY_CONFIG.dinner.blocked ? '✅ Ouvrir dîner' : '🚫 Fermer dîner', 
+        'toggle_dinner'
+      )
+    ],
+    [Markup.button.callback('📝 Modifier capacité', 'edit_dinner_capacity')],
+    [Markup.button.callback('🔙 Retour', 'capacity_status')]
+  ]);
+  
+  const status = CAPACITY_CONFIG.dinner.blocked ? '🚫 FERMÉ' : '✅ OUVERT';
+  
+  ctx.editMessageText(
+    `🌙 **GESTION DÎNER**\n\n` +
+    `Capacité: ${CAPACITY_CONFIG.dinner.maxCapacity} places\n` +
+    `Horaires: ${CAPACITY_CONFIG.dinner.startHour}h-${CAPACITY_CONFIG.dinner.endHour}h\n` +
+    `Statut: ${status}\n\n` +
+    `Choisissez une action:`,
+    { parse_mode: 'Markdown', ...dinnerKeyboard }
+  );
+  ctx.answerCbQuery();
+});
+
+// Toggle services
+bot.action('toggle_lunch', async ctx => {
+  CAPACITY_CONFIG.lunch.blocked = !CAPACITY_CONFIG.lunch.blocked;
+  const status = CAPACITY_CONFIG.lunch.blocked ? 'FERMÉ' : 'OUVERT';
+  
+  ctx.answerCbQuery(`Déjeuner maintenant ${status}`);
+  
+  ctx.editMessageText(
+    `🍽️ Service déjeuner maintenant **${status}**\n\n` +
+    `Les réservations en ligne pour le déjeuner sont ${CAPACITY_CONFIG.lunch.blocked ? 'bloquées' : 'autorisées'}.`,
+    { parse_mode: 'Markdown' }
+  );
+  
+  await notifyTelegram(
+    `🍽️ *Service déjeuner ${status}*\n• Par: ${ctx.from.first_name || ctx.from.username}\n• Réservations en ligne: ${CAPACITY_CONFIG.lunch.blocked ? 'BLOQUÉES' : 'AUTORISÉES'}`
+  );
+});
+
+bot.action('toggle_dinner', async ctx => {
+  CAPACITY_CONFIG.dinner.blocked = !CAPACITY_CONFIG.dinner.blocked;
+  const status = CAPACITY_CONFIG.dinner.blocked ? 'FERMÉ' : 'OUVERT';
+  
+  ctx.answerCbQuery(`Dîner maintenant ${status}`);
+  
+  ctx.editMessageText(
+    `🌙 Service dîner maintenant **${status}**\n\n` +
+    `Les réservations en ligne pour le dîner sont ${CAPACITY_CONFIG.dinner.blocked ? 'bloquées' : 'autorisées'}.`,
+    { parse_mode: 'Markdown' }
+  );
+  
+  await notifyTelegram(
+    `🌙 *Service dîner ${status}*\n• Par: ${ctx.from.first_name || ctx.from.username}\n• Réservations en ligne: ${CAPACITY_CONFIG.dinner.blocked ? 'BLOQUÉES' : 'AUTORISÉES'}`
+  );
+});
+
+// Modifier capacités
+bot.action('edit_lunch_capacity', ctx => {
+  ctx.editMessageText(
+    `🍽️ **Modifier capacité déjeuner**\n\nCapacité actuelle: ${CAPACITY_CONFIG.lunch.maxCapacity} personnes\n\nEnvoyez la nouvelle capacité:`,
+    { parse_mode: 'Markdown' }
+  );
+  
+  const userId = ctx.from.id;
+  if (!userSessions.has(userId)) {
+    userSessions.set(userId, {});
+  }
+  userSessions.get(userId).waitingForCapacityChange = 'lunch';
+  ctx.answerCbQuery();
+});
+
+bot.action('edit_dinner_capacity', ctx => {
+  ctx.editMessageText(
+    `🌙 **Modifier capacité dîner**\n\nCapacité actuelle: ${CAPACITY_CONFIG.dinner.maxCapacity} personnes\n\nEnvoyez la nouvelle capacité:`,
+    { parse_mode: 'Markdown' }
+  );
+  
+  const userId = ctx.from.id;
+  if (!userSessions.has(userId)) {
+    userSessions.set(userId, {});
+  }
+  userSessions.get(userId).waitingForCapacityChange = 'dinner';
+  ctx.answerCbQuery();
+});
+
+// Liste d'attente
+bot.action('waitlist_view', ctx => {
+  if (waitingList.size === 0) {
+    ctx.editMessageText('📋 **LISTE D\'ATTENTE VIDE**', { parse_mode: 'Markdown' });
+  } else {
+    let message = `📋 **LISTE D'ATTENTE** (${waitingList.size})\n\n`;
+    
+    Array.from(waitingList.entries()).forEach(([id, request], index) => {
+      const date = new Date(request.datetime).toLocaleDateString('fr-FR');
+      const time = new Date(request.datetime).toLocaleTimeString('fr-FR', { 
+        hour: '2-digit', minute: '2-digit' 
+      });
+      
+      message += `**${index + 1}.** ${request.name}\n`;
+      message += `   📅 ${date} ${time}\n`;
+      message += `   👥 ${request.party} pers. (${request.source})\n`;
+      if (request.phoneNumber) {
+        message += `   📞 ${request.phoneNumber}\n`;
+      }
+      if (request.email) {
+        message += `   📧 ${request.email}\n`;
+      }
+      message += '\n';
+    });
+    
+    ctx.editMessageText(message, { parse_mode: 'Markdown' });
+  }
+  ctx.answerCbQuery();
+});
+
+// Retour menu
+bot.action('back_main', ctx => {
+  ctx.deleteMessage();
+  ctx.reply('Menu principal:', mainKeyboard);
+  ctx.answerCbQuery();
+});
+
+// ── ORIGINAL BOOKING COMMANDS ────────────────────────────────────────────────
 
 // Ajouter réservation
 bot.hears('➕ Ajouter réservation', ctx => {
@@ -968,12 +1145,333 @@ bot.hears("📋 Voir réservations aujourd'hui", async ctx => {
   }
 });
 
+// Voir calendrier
+bot.hears('📅 Voir calendrier', async ctx => {
+  try {
+    const now = new Date();
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    
+    const events = await getCalendarEvents(now, endOfMonth);
+    
+    if (events.length === 0) {
+      const url = `https://calendar.google.com/calendar/embed?src=${encodeURIComponent(CALENDAR_ID)}&ctz=Europe/Paris`;
+      return ctx.replyWithHTML(`Aucune réservation ce mois-ci.\n\n<a href="${url}">📅 Voir le calendrier complet</a>`);
+    }
+
+    let message = "*📅 Réservations ce mois-ci:*\n\n";
+    
+    const eventsByDate = {};
+    events.forEach(event => {
+      if (event.start && event.start.dateTime) {
+        const eventDate = new Date(event.start.dateTime);
+        const dateKey = eventDate.toLocaleDateString('fr-FR', { 
+          weekday: 'short', 
+          day: 'numeric', 
+          month: 'short' 
+        });
+        
+        if (!eventsByDate[dateKey]) {
+          eventsByDate[dateKey] = [];
+        }
+        
+        const time = eventDate.toLocaleTimeString('fr-FR', { 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        });
+        
+        eventsByDate[dateKey].push(`  • ${time} - ${event.summary || 'Réservation'}`);
+      }
+    });
+
+    Object.keys(eventsByDate).forEach(date => {
+      message += `**${date}**\n`;
+      message += eventsByDate[date].join('\n');
+      message += '\n\n';
+    });
+
+    const url = `https://calendar.google.com/calendar/embed?src=${encodeURIComponent(CALENDAR_ID)}&ctz=Europe/Paris`;
+    message += `[📅 Voir le calendrier complet](${url})`;
+
+    ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('Error fetching calendar:', error);
+    const url = `https://calendar.google.com/calendar/embed?src=${encodeURIComponent(CALENDAR_ID)}&ctz=Europe/Paris`;
+    ctx.replyWithHTML(`❌ Erreur lors de la récupération du calendrier.\n\n<a href="${url}">📅 Voir le calendrier complet</a>`);
+  }
+});
+
+// Voir resa de la semaine
+bot.hears('📊 Voir resa de la semaine', async ctx => {
+  try {
+    const weekEvents = await getWeekReservations();
+    
+    if (Object.keys(weekEvents).length === 0) {
+      return ctx.reply("📅 *Aucune réservation cette semaine.*", { parse_mode: 'Markdown' });
+    }
+
+    let message = "*📊 Réservations de la semaine:*\n\n";
+    
+    const sortedDays = Object.keys(weekEvents).sort();
+    
+    sortedDays.forEach(dateKey => {
+      const dayData = weekEvents[dateKey];
+      message += `**${dayData.dayName} ${dayData.date}**\n`;
+      
+      dayData.events.forEach(event => {
+        message += `  • ${event.time} - ${event.summary}\n`;
+      });
+      
+      message += '\n';
+    });
+
+    ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('Error fetching week reservations:', error);
+    ctx.reply('❌ Erreur lors de la récupération des réservations de la semaine');
+  }
+});
+
+// Keep the old /new command for quick access - ENHANCED
+bot.command('new', async ctx => {
+  try {
+    const parts = ctx.message.text.split(' ');
+    if (parts.length < 5) {
+      return ctx.reply('❌ Format invalide. Utilisez : `/new YYYY-MM-DD HH:MM N Nom [Téléphone]`\n\nOu utilisez le bouton "➕ Ajouter réservation" pour une interface plus simple!', { parse_mode: 'Markdown' });
+    }
+    
+    const [, date, time, party, ...nameAndPhoneParts] = parts;
+    const nameAndPhone = nameAndPhoneParts.join(' ');
+    
+    // Try to extract phone number (last part if it looks like a phone number)
+    const lastPart = nameAndPhoneParts[nameAndPhoneParts.length - 1];
+    let name, phoneNumber = '';
+    
+    if (lastPart && /^[\d\s\+\-\(\)]{8,}$/.test(lastPart)) {
+      phoneNumber = lastPart;
+      name = nameAndPhoneParts.slice(0, -1).join(' ');
+    } else {
+      name = nameAndPhone;
+    }
+    
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) {
+      return ctx.reply('❌ Format de date/heure invalide. Utilisez YYYY-MM-DD HH:MM', { parse_mode: 'Markdown' });
+    }
+    
+    const when = new Date(`${date}T${time}:00`).toISOString();
+    await addBooking({ 
+      name, 
+      party: +party, 
+      datetime: when, 
+      source: 'Telegram',
+      phoneNumber
+    });
+    
+    let successMessage = `✅ Réservation ajoutée : ${date} ${time}, ${party} pers. pour ${name}`;
+    if (phoneNumber) {
+      successMessage += ` 📞 ${phoneNumber}`;
+    }
+    
+    ctx.reply(successMessage);
+    
+    let notificationMessage = `📞 *Réservation ajoutée*\n• ${date} ${time}\n• ${party} pers.: ${name}`;
+    if (phoneNumber) {
+      notificationMessage += `\n• 📞 ${phoneNumber}`;
+    }
+    
+    await notifyTelegram(notificationMessage);
+  } catch (error) {
+    console.error('Error adding reservation:', error);
+    ctx.reply('❌ Erreur lors de l\'ajout de la réservation');
+  }
+});
+
+// /list - ENHANCED
+bot.command('list', async ctx => {
+  try {
+    if (!sheet) {
+      return ctx.reply('❌ Service non disponible - problème de connexion');
+    }
+    
+    await sheet.loadHeaderRow();
+    const rows = await sheet.getRows();
+    const today = getTodayString();
+    const todayRows = rows.filter(r => {
+      const dateTime = r.get('DateTime');
+      return dateTime && dateTime.startsWith(today);
+    });
+    
+    if (!todayRows.length) {
+      return ctx.reply("Aucune réservation pour aujourd'hui.");
+    }
+    
+    const lines = todayRows.map(r => {
+      const dateTime = r.get('DateTime');
+      const t = new Date(dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const name = r.get('Name');
+      const party = r.get('PartySize');
+      
+      let line = `– ${t}, ${party} pers.: ${name}`;
+      
+      if (sheetHasPhoneEmail) {
+        const phone = r.get('PhoneNumber');
+        const email = r.get('Email');
+        if (phone) line += ` 📞 ${phone}`;
+        if (email) line += ` 📧 ${email}`;
+      }
+      
+      return line;
+    });
+    
+    ctx.reply("*Réservations aujourd'hui:*\n" + lines.join("\n"), { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('Error listing reservations:', error);
+    ctx.reply('❌ Erreur lors de la récupération des réservations');
+  }
+});
+
 // ── ENHANCED BOOKING FLOW WITH PHONE NUMBER (CONDITIONAL) ───────────────────
+
+// Handle calendar date selection
+bot.action(/^date_(.+)$/, ctx => {
+  const selectedDate = ctx.match[1];
+  const userId = ctx.from.id;
+  
+  if (!userSessions.has(userId)) {
+    userSessions.set(userId, {});
+  }
+  userSessions.get(userId).selectedDate = selectedDate;
+  
+  const dateObj = new Date(selectedDate);
+  const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
+    weekday: 'long', 
+    day: 'numeric', 
+    month: 'long',
+    year: 'numeric'
+  });
+  
+  ctx.editMessageText(`📅 Date: ${dateDisplay}\n\n🕐 Choisissez l'heure:`, generateTimeSlots());
+});
+
+// Handle time selection
+bot.action(/^time_(.+)$/, ctx => {
+  const selectedTime = ctx.match[1];
+  const userId = ctx.from.id;
+  
+  if (!userSessions.has(userId)) {
+    return ctx.answerCbQuery('❌ Session expirée, recommencez');
+  }
+  
+  userSessions.get(userId).selectedTime = selectedTime;
+  
+  const session = userSessions.get(userId);
+  const dateObj = new Date(session.selectedDate);
+  const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
+    weekday: 'long', 
+    day: 'numeric', 
+    month: 'long'
+  });
+  
+  ctx.editMessageText(
+    `📅 Date: ${dateDisplay}\n🕐 Heure: ${selectedTime}\n\n👥 Combien de personnes?`,
+    generatePartySizeButtons()
+  );
+});
+
+// Handle party size selection
+bot.action(/^party_(.+)$/, ctx => {
+  const partySize = ctx.match[1];
+  const userId = ctx.from.id;
+  
+  if (!userSessions.has(userId)) {
+    return ctx.answerCbQuery('❌ Session expirée, recommencez');
+  }
+  
+  userSessions.get(userId).partySize = partySize;
+  
+  const session = userSessions.get(userId);
+  const dateObj = new Date(session.selectedDate);
+  const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
+    weekday: 'long', 
+    day: 'numeric', 
+    month: 'long'
+  });
+  
+  ctx.editMessageText(
+    `📅 Date: ${dateDisplay}\n🕐 Heure: ${session.selectedTime}\n👥 Personnes: ${partySize}\n\n📝 Maintenant, envoyez le nom pour la réservation:`
+  );
+  
+  userSessions.get(userId).waitingForName = true;
+});
+
+// Handle back buttons
+bot.action('back_to_calendar', ctx => {
+  ctx.editMessageText('📅 Choisissez une date pour votre réservation:', generateCalendar());
+});
+
+bot.action('back_to_time', ctx => {
+  const userId = ctx.from.id;
+  const session = userSessions.get(userId);
+  
+  if (session && session.selectedDate) {
+    const dateObj = new Date(session.selectedDate);
+    const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
+      weekday: 'long', 
+      day: 'numeric', 
+      month: 'long',
+      year: 'numeric'
+    });
+    
+    ctx.editMessageText(`📅 Date: ${dateDisplay}\n\n🕐 Choisissez l'heure:`, generateTimeSlots());
+  } else {
+    ctx.editMessageText('📅 Choisissez une date pour votre réservation:', generateCalendar());
+  }
+});
+
+// Handle spacer clicks (do nothing)
+bot.action(['spacer', 'spacer2', 'lunch_header', 'dinner_header'], ctx => {
+  ctx.answerCbQuery();
+});
+
+// Handle month header clicks (do nothing)
+bot.action(/^month_/, ctx => {
+  ctx.answerCbQuery();
+});
+
+// ── ENHANCED TEXT INPUT HANDLER WITH PHONE NUMBER SUPPORT ───────────────────
 
 // Enhanced text input handler with conditional phone number collection
 bot.on('text', async ctx => {
   const userId = ctx.from.id;
   const session = userSessions.get(userId);
+  
+  // CAPACITY MANAGEMENT: Handle capacity changes
+  if (session && session.waitingForCapacityChange) {
+    const newCapacity = parseInt(ctx.message.text);
+    
+    if (isNaN(newCapacity) || newCapacity <= 0) {
+      return ctx.reply('❌ Entrez un nombre valide > 0');
+    }
+    
+    const serviceType = session.waitingForCapacityChange;
+    const oldCapacity = CAPACITY_CONFIG[serviceType].maxCapacity;
+    
+    CAPACITY_CONFIG[serviceType].maxCapacity = newCapacity;
+    delete session.waitingForCapacityChange;
+    
+    const serviceName = serviceType === 'lunch' ? 'déjeuner' : 'dîner';
+    
+    ctx.reply(
+      `✅ **Capacité ${serviceName} modifiée**\n\n` +
+      `${oldCapacity} → ${newCapacity} personnes`,
+      { parse_mode: 'Markdown', ...mainKeyboard }
+    );
+    
+    await notifyTelegram(
+      `⚙️ *Capacité ${serviceName} modifiée*\n• ${oldCapacity} → ${newCapacity}\n• Par: ${ctx.from.first_name || ctx.from.username}`
+    );
+    
+    return;
+  }
   
   // Handle name input for reservations
   if (session && session.waitingForName) {
@@ -1074,81 +1572,6 @@ async function processReservation(ctx, session, name, phoneNumber) {
     userSessions.delete(userId);
   }
 }
-
-// Keep all other handlers exactly the same as original
-// [Calendar, time, party size handlers, etc.]
-
-// Handle calendar date selection
-bot.action(/^date_(.+)$/, ctx => {
-  const selectedDate = ctx.match[1];
-  const userId = ctx.from.id;
-  
-  if (!userSessions.has(userId)) {
-    userSessions.set(userId, {});
-  }
-  userSessions.get(userId).selectedDate = selectedDate;
-  
-  const dateObj = new Date(selectedDate);
-  const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
-    weekday: 'long', 
-    day: 'numeric', 
-    month: 'long',
-    year: 'numeric'
-  });
-  
-  ctx.editMessageText(`📅 Date: ${dateDisplay}\n\n🕐 Choisissez l'heure:`, generateTimeSlots());
-});
-
-// Handle time selection
-bot.action(/^time_(.+)$/, ctx => {
-  const selectedTime = ctx.match[1];
-  const userId = ctx.from.id;
-  
-  if (!userSessions.has(userId)) {
-    return ctx.answerCbQuery('❌ Session expirée, recommencez');
-  }
-  
-  userSessions.get(userId).selectedTime = selectedTime;
-  
-  const session = userSessions.get(userId);
-  const dateObj = new Date(session.selectedDate);
-  const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
-    weekday: 'long', 
-    day: 'numeric', 
-    month: 'long'
-  });
-  
-  ctx.editMessageText(
-    `📅 Date: ${dateDisplay}\n🕐 Heure: ${selectedTime}\n\n👥 Combien de personnes?`,
-    generatePartySizeButtons()
-  );
-});
-
-// Handle party size selection
-bot.action(/^party_(.+)$/, ctx => {
-  const partySize = ctx.match[1];
-  const userId = ctx.from.id;
-  
-  if (!userSessions.has(userId)) {
-    return ctx.answerCbQuery('❌ Session expirée, recommencez');
-  }
-  
-  userSessions.get(userId).partySize = partySize;
-  
-  const session = userSessions.get(userId);
-  const dateObj = new Date(session.selectedDate);
-  const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
-    weekday: 'long', 
-    day: 'numeric', 
-    month: 'long'
-  });
-  
-  ctx.editMessageText(
-    `📅 Date: ${dateDisplay}\n🕐 Heure: ${session.selectedTime}\n👥 Personnes: ${partySize}\n\n📝 Maintenant, envoyez le nom pour la réservation:`
-  );
-  
-  userSessions.get(userId).waitingForName = true;
-});
 
 // Error handling for bot
 bot.catch((err, ctx) => {
