@@ -1,5 +1,5 @@
-/* index.js - SAFE ENHANCED VERSION BASED ON ORIGINAL WORKING CODE
- * Telegram Booking Bot using Google Sheets + Google Calendar + Capacity Control
+/* index.js - ENHANCED VERSION WITH ARRIVAL TRACKING
+ * Telegram Booking Bot using Google Sheets + Google Calendar + Capacity Control + Arrival Tracking
  * ========================================
  */
 
@@ -39,8 +39,9 @@ const CAPACITY_CONFIG = {
 let globalOnlineBookingBlocked = false;
 let waitingList = new Map(); // Pour stocker les demandes en attente
 
-// NEW: Track if sheet has phone/email columns
+// NEW: Track if sheet has phone/email columns and arrival tracking
 let sheetHasPhoneEmail = false;
+let sheetHasArrivalTracking = false;
 
 // Express setup
 const app = express();
@@ -62,7 +63,7 @@ app.use((req, res, next) => {
 // Health-check
 app.get('/', (req, res) => res.json({ 
   status: 'running', 
-  service: 'La Savane Booking Bot with Capacity Management',
+  service: 'La Savane Booking Bot with Capacity Management + Arrival Tracking',
   timestamp: new Date().toISOString()
 }));
 
@@ -117,7 +118,7 @@ async function getUsedCapacity(date, serviceType) {
     
     rows.forEach((row, index) => {
       const dateTime = row.get('DateTime');
-      const party = row.get('PartySize'); // FIXED: Changed from 'Party' to 'PartySize'
+      const party = row.get('PartySize');
       const name = row.get('Name');
       
       // Debug: afficher quelques lignes pour diagnostiquer
@@ -222,10 +223,118 @@ async function getTodayCapacityStatus() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ARRIVAL TRACKING FUNCTIONS - NEW FEATURE
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get today's reservations by service with arrival status
+async function getTodayReservationsByService(serviceType) {
+  try {
+    if (!sheet) {
+      throw new Error('Sheet not initialized');
+    }
+    
+    await sheet.loadHeaderRow();
+    const rows = await sheet.getRows();
+    
+    const today = getTodayString();
+    const service = CAPACITY_CONFIG[serviceType];
+    
+    const reservations = [];
+    
+    rows.forEach((row, index) => {
+      const dateTime = row.get('DateTime');
+      
+      if (dateTime && dateTime.startsWith(today)) {
+        const reservationDate = new Date(dateTime);
+        const reservationHour = reservationDate.getHours();
+        
+        // Check if reservation is within service hours
+        if (reservationHour >= service.startHour && reservationHour <= service.endHour) {
+          const name = row.get('Name') || 'N/A';
+          const party = parseInt(row.get('PartySize') || 0);
+          const source = row.get('Source') || 'N/A';
+          const phone = sheetHasPhoneEmail ? (row.get('PhoneNumber') || '') : '';
+          const email = sheetHasPhoneEmail ? (row.get('Email') || '') : '';
+          const arrived = sheetHasArrivalTracking ? (row.get('Arrived') || 'No') : 'No';
+          
+          reservations.push({
+            rowIndex: index,
+            name,
+            party,
+            time: reservationDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+            source,
+            phone,
+            email,
+            arrived: arrived === 'Yes' || arrived === 'TRUE' || arrived === true,
+            dateTime: reservationDate
+          });
+        }
+      }
+    });
+    
+    // Sort by time
+    reservations.sort((a, b) => a.dateTime - b.dateTime);
+    
+    return reservations;
+  } catch (error) {
+    console.error('Error getting reservations by service:', error);
+    return [];
+  }
+}
+
+// Mark reservation as arrived/not arrived
+async function toggleArrivalStatus(rowIndex, currentStatus) {
+  try {
+    if (!sheet || !sheetHasArrivalTracking) {
+      throw new Error('Arrival tracking not available');
+    }
+    
+    await sheet.loadHeaderRow();
+    const rows = await sheet.getRows();
+    
+    if (rowIndex >= rows.length) {
+      throw new Error('Invalid row index');
+    }
+    
+    const row = rows[rowIndex];
+    const newStatus = currentStatus ? 'No' : 'Yes';
+    
+    await row.assign({ Arrived: newStatus });
+    await row.save();
+    
+    console.log(`✅ Toggled arrival status for row ${rowIndex}: ${currentStatus} → ${!currentStatus}`);
+    
+    return !currentStatus;
+  } catch (error) {
+    console.error('Error toggling arrival status:', error);
+    throw error;
+  }
+}
+
+// Get arrival statistics for a service
+async function getArrivalStats(serviceType) {
+  const reservations = await getTodayReservationsByService(serviceType);
+  
+  const total = reservations.length;
+  const arrived = reservations.filter(r => r.arrived).length;
+  const totalPeople = reservations.reduce((sum, r) => sum + r.party, 0);
+  const arrivedPeople = reservations.filter(r => r.arrived).reduce((sum, r) => sum + r.party, 0);
+  
+  return {
+    totalReservations: total,
+    arrivedReservations: arrived,
+    totalPeople,
+    arrivedPeople,
+    reservationRate: total > 0 ? Math.round((arrived / total) * 100) : 0,
+    peopleRate: totalPeople > 0 ? Math.round((arrivedPeople / totalPeople) * 100) : 0
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // GOOGLE SERVICES INITIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-// NEW: Check if sheet has Phone/Email columns
+// ENHANCED: Check if sheet has Phone/Email columns AND Arrival tracking
 async function checkSheetStructure() {
   try {
     await sheet.loadHeaderRow();
@@ -234,17 +343,23 @@ async function checkSheetStructure() {
     
     const hasPhone = headers.includes('PhoneNumber');
     const hasEmail = headers.includes('Email');
+    const hasArrived = headers.includes('Arrived');
+    
     sheetHasPhoneEmail = hasPhone && hasEmail;
+    sheetHasArrivalTracking = hasArrived;
     
     console.log(`📞 PhoneNumber column: ${hasPhone ? '✅ EXISTS' : '❌ MISSING'}`);
     console.log(`📧 Email column: ${hasEmail ? '✅ EXISTS' : '❌ MISSING'}`);
+    console.log(`👥 Arrived column: ${hasArrived ? '✅ EXISTS' : '❌ MISSING'}`);
     console.log(`🔄 Enhanced mode: ${sheetHasPhoneEmail ? '✅ ENABLED' : '❌ DISABLED (backward compatibility)'}`);
+    console.log(`📊 Arrival tracking: ${sheetHasArrivalTracking ? '✅ ENABLED' : '❌ DISABLED'}`);
     
-    return sheetHasPhoneEmail;
+    return { hasPhoneEmail: sheetHasPhoneEmail, hasArrivalTracking: sheetHasArrivalTracking };
   } catch (error) {
     console.error('❌ Error checking sheet structure:', error);
     sheetHasPhoneEmail = false;
-    return false;
+    sheetHasArrivalTracking = false;
+    return { hasPhoneEmail: false, hasArrivalTracking: false };
   }
 }
 
@@ -295,7 +410,7 @@ async function initializeGoogleServices() {
     await doc.loadInfo();
     sheet = doc.sheetsByIndex[0];
     
-    // NEW: Check sheet structure for new columns
+    // ENHANCED: Check sheet structure for new columns
     await checkSheetStructure();
     
     // Initialize Google Calendar
@@ -318,7 +433,7 @@ async function initializeGoogleServices() {
 // BOOKING FUNCTIONS - ENHANCED WITH PHONE/EMAIL SUPPORT
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ENHANCED: booking function with optional phone/email
+// ENHANCED: booking function with optional phone/email and arrival tracking
 async function addBooking({ name, party, datetime, source, phoneNumber = '', email = '' }) {
   if (!sheet || !calendar) {
     throw new Error('Google Services not initialized');
@@ -328,11 +443,11 @@ async function addBooking({ name, party, datetime, source, phoneNumber = '', ema
   if (phoneNumber) console.log(`📞 Phone: ${phoneNumber}`);
   if (email) console.log(`📧 Email: ${email}`);
   
-  // Create row data - SAFE: only add phone/email if columns exist
+  // Create row data - SAFE: only add phone/email/arrived if columns exist
   let rowData = {
     Timestamp: new Date().toISOString(),
     Name: name,
-    PartySize: party, // FIXED: Changed from 'Party' to 'PartySize'
+    PartySize: party,
     DateTime: datetime,
     Source: source
   };
@@ -342,8 +457,16 @@ async function addBooking({ name, party, datetime, source, phoneNumber = '', ema
     rowData.PhoneNumber = phoneNumber || '';
     rowData.Email = email || '';
     console.log('✅ Adding phone/email to enhanced sheet');
-  } else {
-    console.log('⚠️ Using backward compatibility mode (no phone/email columns)');
+  }
+  
+  // Only add arrival tracking if sheet has that column
+  if (sheetHasArrivalTracking) {
+    rowData.Arrived = 'No'; // Default to not arrived
+    console.log('✅ Adding arrival tracking to enhanced sheet');
+  }
+  
+  if (!sheetHasPhoneEmail && !sheetHasArrivalTracking) {
+    console.log('⚠️ Using backward compatibility mode (no enhanced columns)');
   }
   
   // Add to Google Sheets
@@ -623,6 +746,27 @@ function generatePartySizeButtons() {
   ]);
 }
 
+// NEW: Generate arrival tracking buttons for a service
+function generateArrivalTrackingButtons(reservations, serviceType) {
+  const buttons = [];
+  
+  reservations.forEach((reservation, index) => {
+    const status = reservation.arrived ? '✅' : '❌';
+    const buttonText = `${status} ${reservation.time} - ${reservation.name} (${reservation.party})`;
+    
+    buttons.push([
+      Markup.button.callback(buttonText, `toggle_arrival_${serviceType}_${reservation.rowIndex}`)
+    ]);
+  });
+  
+  // Add stats and controls
+  buttons.push([Markup.button.callback('📊 Voir statistiques', `arrival_stats_${serviceType}`)]);
+  buttons.push([Markup.button.callback('🔄 Actualiser', `refresh_arrivals_${serviceType}`)]);
+  buttons.push([Markup.button.callback('🔙 Retour menu', 'back_main')]);
+  
+  return Markup.inlineKeyboard(buttons);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // WEBFLOW WEBHOOK WITH CAPACITY MANAGEMENT - ENHANCED WITH EMAIL
 // ═══════════════════════════════════════════════════════════════════════════
@@ -706,22 +850,204 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TELEGRAM BOT COMMANDS AND HANDLERS - ENHANCED
+// TELEGRAM BOT COMMANDS AND HANDLERS - ENHANCED WITH ARRIVAL TRACKING
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Reply keyboard with buttons (UPDATED WITH CAPACITY MANAGEMENT)
+// Reply keyboard with buttons (UPDATED WITH ARRIVAL TRACKING)
 const mainKeyboard = Markup.keyboard([
   ['➕ Ajouter réservation', "📋 Voir réservations aujourd'hui"],
   ['📅 Voir calendrier', '📊 Voir resa de la semaine'],
   ['📊 Places restantes', '⚙️ Gestion capacité'],
+  ['🍽️ Arrivées déjeuner', '🌙 Arrivées dîner'], // NEW: Arrival tracking buttons
   ['🚫 Bloquer toutes résa en ligne', '✅ Activer toutes résa en ligne'],
-  ['🔍 Debug sheet'] // Added debug button
+  ['🔍 Debug sheet'] // Debug button
 ]).resize();
 
 // /start
-bot.start(ctx =>
-  ctx.reply(`Bienvenue chez La Savane! ${sheetHasPhoneEmail ? '📞📧 Mode Enhanced' : '⚠️ Mode Compatible'}\n\nChoisissez une action:`, mainKeyboard)
-);
+bot.start(ctx => {
+  const features = [];
+  features.push(sheetHasPhoneEmail ? '📞📧 Mode Enhanced' : '⚠️ Mode Compatible');
+  features.push(sheetHasArrivalTracking ? '👥 Arrival Tracking' : '❌ No Arrival Tracking');
+  
+  ctx.reply(
+    `Bienvenue chez La Savane! ${features.join(' | ')}\n\nChoisissez une action:`, 
+    mainKeyboard
+  );
+});
+
+// ── NEW: ARRIVAL TRACKING COMMANDS ──────────────────────────────────────────
+
+// Commande: Arrivées déjeuner
+bot.hears('🍽️ Arrivées déjeuner', async ctx => {
+  if (!sheetHasArrivalTracking) {
+    return ctx.reply('❌ Suivi des arrivées non disponible.\n\nVeuillez ajouter une colonne "Arrived" dans votre Google Sheet.');
+  }
+  
+  try {
+    const reservations = await getTodayReservationsByService('lunch');
+    
+    if (reservations.length === 0) {
+      return ctx.reply('📋 Aucune réservation pour le déjeuner aujourd\'hui.');
+    }
+    
+    const stats = await getArrivalStats('lunch');
+    
+    let message = `🍽️ **DÉJEUNER - SUIVI DES ARRIVÉES**\n\n`;
+    message += `📊 **Stats:** ${stats.arrivedReservations}/${stats.totalReservations} réservations (${stats.reservationRate}%)\n`;
+    message += `👥 **Personnes:** ${stats.arrivedPeople}/${stats.totalPeople} (${stats.peopleRate}%)\n\n`;
+    message += `Cliquez sur une réservation pour changer son statut:`;
+    
+    ctx.reply(message, {
+      parse_mode: 'Markdown',
+      ...generateArrivalTrackingButtons(reservations, 'lunch')
+    });
+  } catch (error) {
+    console.error('Error showing lunch arrivals:', error);
+    ctx.reply('❌ Erreur lors de la récupération des arrivées déjeuner');
+  }
+});
+
+// Commande: Arrivées dîner
+bot.hears('🌙 Arrivées dîner', async ctx => {
+  if (!sheetHasArrivalTracking) {
+    return ctx.reply('❌ Suivi des arrivées non disponible.\n\nVeuillez ajouter une colonne "Arrived" dans votre Google Sheet.');
+  }
+  
+  try {
+    const reservations = await getTodayReservationsByService('dinner');
+    
+    if (reservations.length === 0) {
+      return ctx.reply('📋 Aucune réservation pour le dîner aujourd\'hui.');
+    }
+    
+    const stats = await getArrivalStats('dinner');
+    
+    let message = `🌙 **DÎNER - SUIVI DES ARRIVÉES**\n\n`;
+    message += `📊 **Stats:** ${stats.arrivedReservations}/${stats.totalReservations} réservations (${stats.reservationRate}%)\n`;
+    message += `👥 **Personnes:** ${stats.arrivedPeople}/${stats.totalPeople} (${stats.peopleRate}%)\n\n`;
+    message += `Cliquez sur une réservation pour changer son statut:`;
+    
+    ctx.reply(message, {
+      parse_mode: 'Markdown',
+      ...generateArrivalTrackingButtons(reservations, 'dinner')
+    });
+  } catch (error) {
+    console.error('Error showing dinner arrivals:', error);
+    ctx.reply('❌ Erreur lors de la récupération des arrivées dîner');
+  }
+});
+
+// ── NEW: ARRIVAL TRACKING CALLBACKS ─────────────────────────────────────────
+
+// Toggle arrival status
+bot.action(/^toggle_arrival_(lunch|dinner)_(\d+)$/, async ctx => {
+  const serviceType = ctx.match[1];
+  const rowIndex = parseInt(ctx.match[2]);
+  
+  try {
+    const reservations = await getTodayReservationsByService(serviceType);
+    const reservation = reservations.find(r => r.rowIndex === rowIndex);
+    
+    if (!reservation) {
+      return ctx.answerCbQuery('❌ Réservation non trouvée');
+    }
+    
+    const newStatus = await toggleArrivalStatus(rowIndex, reservation.arrived);
+    
+    // Update the display
+    const updatedReservations = await getTodayReservationsByService(serviceType);
+    const stats = await getArrivalStats(serviceType);
+    
+    const serviceName = serviceType === 'lunch' ? 'DÉJEUNER' : 'DÎNER';
+    const serviceEmoji = serviceType === 'lunch' ? '🍽️' : '🌙';
+    
+    let message = `${serviceEmoji} **${serviceName} - SUIVI DES ARRIVÉES**\n\n`;
+    message += `📊 **Stats:** ${stats.arrivedReservations}/${stats.totalReservations} réservations (${stats.reservationRate}%)\n`;
+    message += `👥 **Personnes:** ${stats.arrivedPeople}/${stats.totalPeople} (${stats.peopleRate}%)\n\n`;
+    message += `Cliquez sur une réservation pour changer son statut:`;
+    
+    ctx.editMessageText(message, {
+      parse_mode: 'Markdown',
+      ...generateArrivalTrackingButtons(updatedReservations, serviceType)
+    });
+    
+    const statusText = newStatus ? 'ARRIVÉ' : 'NON ARRIVÉ';
+    ctx.answerCbQuery(`✅ ${reservation.name} marqué comme ${statusText}`);
+    
+  } catch (error) {
+    console.error('Error toggling arrival status:', error);
+    ctx.answerCbQuery('❌ Erreur lors de la mise à jour');
+  }
+});
+
+// Show arrival statistics
+bot.action(/^arrival_stats_(lunch|dinner)$/, async ctx => {
+  const serviceType = ctx.match[1];
+  
+  try {
+    const stats = await getArrivalStats(serviceType);
+    const reservations = await getTodayReservationsByService(serviceType);
+    
+    const serviceName = serviceType === 'lunch' ? 'DÉJEUNER' : 'DÎNER';
+    const serviceEmoji = serviceType === 'lunch' ? '🍽️' : '🌙';
+    
+    let message = `${serviceEmoji} **STATISTIQUES ${serviceName}**\n\n`;
+    
+    // Overall stats
+    message += `📊 **RÉSERVATIONS**\n`;
+    message += `• Total: ${stats.totalReservations}\n`;
+    message += `• Arrivées: ${stats.arrivedReservations}\n`;
+    message += `• Taux: ${stats.reservationRate}%\n\n`;
+    
+    message += `👥 **PERSONNES**\n`;
+    message += `• Total: ${stats.totalPeople}\n`;
+    message += `• Arrivées: ${stats.arrivedPeople}\n`;
+    message += `• Taux: ${stats.peopleRate}%\n\n`;
+    
+    // Detailed list
+    message += `📋 **DÉTAIL**\n`;
+    reservations.forEach(r => {
+      const status = r.arrived ? '✅' : '❌';
+      message += `${status} ${r.time} - ${r.name} (${r.party})\n`;
+    });
+    
+    ctx.editMessageText(message, { parse_mode: 'Markdown' });
+    ctx.answerCbQuery('📊 Statistiques affichées');
+    
+  } catch (error) {
+    console.error('Error showing arrival stats:', error);
+    ctx.answerCbQuery('❌ Erreur lors de la récupération des statistiques');
+  }
+});
+
+// Refresh arrivals
+bot.action(/^refresh_arrivals_(lunch|dinner)$/, async ctx => {
+  const serviceType = ctx.match[1];
+  
+  try {
+    const reservations = await getTodayReservationsByService(serviceType);
+    const stats = await getArrivalStats(serviceType);
+    
+    const serviceName = serviceType === 'lunch' ? 'DÉJEUNER' : 'DÎNER';
+    const serviceEmoji = serviceType === 'lunch' ? '🍽️' : '🌙';
+    
+    let message = `${serviceEmoji} **${serviceName} - SUIVI DES ARRIVÉES**\n\n`;
+    message += `📊 **Stats:** ${stats.arrivedReservations}/${stats.totalReservations} réservations (${stats.reservationRate}%)\n`;
+    message += `👥 **Personnes:** ${stats.arrivedPeople}/${stats.totalPeople} (${stats.peopleRate}%)\n\n`;
+    message += `Cliquez sur une réservation pour changer son statut:`;
+    
+    ctx.editMessageText(message, {
+      parse_mode: 'Markdown',
+      ...generateArrivalTrackingButtons(reservations, serviceType)
+    });
+    
+    ctx.answerCbQuery('🔄 Liste actualisée');
+    
+  } catch (error) {
+    console.error('Error refreshing arrivals:', error);
+    ctx.answerCbQuery('❌ Erreur lors de l\'actualisation');
+  }
+});
 
 // ── CAPACITY MANAGEMENT COMMANDS ─────────────────────────────────────────────
 
@@ -764,7 +1090,10 @@ bot.hears('📊 Places restantes', async ctx => {
     }
     
     // Mode status
-    message += `\n\n🔧 **MODE**: ${sheetHasPhoneEmail ? '📞📧 Enhanced' : '⚠️ Compatible'}`;
+    const features = [];
+    features.push(sheetHasPhoneEmail ? '📞📧 Enhanced' : '⚠️ Compatible');
+    features.push(sheetHasArrivalTracking ? '👥 Arrival Tracking' : '❌ No Arrival Tracking');
+    message += `\n\n🔧 **MODE**: ${features.join(' | ')}`;
     
     ctx.reply(message, { parse_mode: 'Markdown' });
     
@@ -787,7 +1116,8 @@ bot.hears('🔍 Debug sheet', async ctx => {
     let message = `🔍 **DEBUG GOOGLE SHEET**\n\n`;
     message += `📊 Total lignes: ${rows.length}\n`;
     message += `📋 Headers: ${sheet.headerValues.join(', ')}\n`;
-    message += `🔧 Mode: ${sheetHasPhoneEmail ? 'Enhanced' : 'Compatible'}\n\n`;
+    message += `🔧 Enhanced mode: ${sheetHasPhoneEmail ? 'ON' : 'OFF'}\n`;
+    message += `👥 Arrival tracking: ${sheetHasArrivalTracking ? 'ON' : 'OFF'}\n\n`;
     
     // Afficher les 5 dernières réservations
     const recentRows = rows.slice(-5);
@@ -797,8 +1127,9 @@ bot.hears('🔍 Debug sheet', async ctx => {
       const timestamp = row.get('Timestamp') || 'N/A';
       const dateTime = row.get('DateTime') || 'N/A';
       const name = row.get('Name') || 'N/A';
-      const partySize = row.get('PartySize') || 'N/A'; // FIXED: Use PartySize
+      const partySize = row.get('PartySize') || 'N/A';
       const source = row.get('Source') || 'N/A';
+      const arrived = sheetHasArrivalTracking ? (row.get('Arrived') || 'N/A') : 'N/A';
       
       message += `**${index + 1}.** ${name}\n`;
       message += `   📅 DateTime: ${dateTime}\n`;
@@ -811,6 +1142,11 @@ bot.hears('🔍 Debug sheet', async ctx => {
         const email = row.get('Email') || 'N/A';
         message += `   📞 Phone: ${phoneNumber}\n`;
         message += `   📧 Email: ${email}\n`;
+      }
+      
+      // Show arrival status if available
+      if (sheetHasArrivalTracking) {
+        message += `   👥 Arrived: ${arrived}\n`;
       }
       
       message += `   ⏰ Timestamp: ${timestamp}\n\n`;
@@ -827,22 +1163,32 @@ bot.hears('🔍 Debug sheet', async ctx => {
 // NEW: Refresh command to check columns
 bot.command('refresh', async ctx => {
   try {
-    const hadColumns = sheetHasPhoneEmail;
+    const oldPhoneEmail = sheetHasPhoneEmail;
+    const oldArrivalTracking = sheetHasArrivalTracking;
+    
     await checkSheetStructure();
     
-    if (sheetHasPhoneEmail && !hadColumns) {
-      ctx.reply('🎉 **Mode Enhanced activé!**\n\nLes colonnes PhoneNumber et Email ont été détectées.\nLe bot collecte maintenant les numéros de téléphone.', {
-        parse_mode: 'Markdown'
-      });
-    } else if (!sheetHasPhoneEmail && hadColumns) {
-      ctx.reply('⚠️ **Retour au mode Compatible**\n\nLes colonnes PhoneNumber/Email ne sont plus détectées.', {
-        parse_mode: 'Markdown'
-      });
-    } else {
-      ctx.reply(`🔄 **Sheet rechargé**\n\nMode: ${sheetHasPhoneEmail ? '📞📧 Enhanced' : '⚠️ Compatible'}`, {
-        parse_mode: 'Markdown'
-      });
+    let message = '🔄 **Sheet rechargé**\n\n';
+    
+    // Check for changes
+    if (sheetHasPhoneEmail && !oldPhoneEmail) {
+      message += '🎉 **Mode Enhanced activé!**\nLes colonnes PhoneNumber et Email ont été détectées.\n\n';
+    } else if (!sheetHasPhoneEmail && oldPhoneEmail) {
+      message += '⚠️ **Retour au mode Compatible**\nLes colonnes PhoneNumber/Email ne sont plus détectées.\n\n';
     }
+    
+    if (sheetHasArrivalTracking && !oldArrivalTracking) {
+      message += '🎉 **Arrival Tracking activé!**\nLa colonne Arrived a été détectée.\n\n';
+    } else if (!sheetHasArrivalTracking && oldArrivalTracking) {
+      message += '⚠️ **Arrival Tracking désactivé**\nLa colonne Arrived n\'est plus détectée.\n\n';
+    }
+    
+    const features = [];
+    features.push(sheetHasPhoneEmail ? '📞📧 Enhanced' : '⚠️ Compatible');
+    features.push(sheetHasArrivalTracking ? '👥 Arrival Tracking' : '❌ No Arrival Tracking');
+    message += `**Mode actuel:** ${features.join(' | ')}`;
+    
+    ctx.reply(message, { parse_mode: 'Markdown' });
   } catch (error) {
     ctx.reply('❌ Erreur lors du rechargement');
   }
@@ -1101,7 +1447,7 @@ bot.hears("📋 Voir réservations aujourd'hui", async ctx => {
       const dateTime = r.get('DateTime');
       const t = new Date(dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const name = r.get('Name');
-      const party = r.get('PartySize'); // FIXED: Use PartySize instead of Party
+      const party = r.get('PartySize');
       
       let line = `– ${t}, ${party} pers.: ${name}`;
       
@@ -1111,6 +1457,13 @@ bot.hears("📋 Voir réservations aujourd'hui", async ctx => {
         const email = r.get('Email');
         if (phone) line += ` 📞 ${phone}`;
         if (email) line += ` 📧 ${email}`;
+      }
+      
+      // Show arrival status if available
+      if (sheetHasArrivalTracking) {
+        const arrived = r.get('Arrived');
+        const status = (arrived === 'Yes' || arrived === 'TRUE' || arrived === true) ? '✅' : '❌';
+        line += ` ${status}`;
       }
       
       return line;
@@ -1237,7 +1590,7 @@ bot.command('new', async ctx => {
   }
 });
 
-// /list - ENHANCED
+// /list - ENHANCED with arrival status
 bot.command('list', async ctx => {
   try {
     if (!sheet) {
@@ -1260,7 +1613,7 @@ bot.command('list', async ctx => {
       const dateTime = r.get('DateTime');
       const t = new Date(dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const name = r.get('Name');
-      const party = r.get('PartySize'); // FIXED: Use PartySize instead of Party
+      const party = r.get('PartySize');
       
       let line = `– ${t}, ${party} pers.: ${name}`;
       
@@ -1269,6 +1622,13 @@ bot.command('list', async ctx => {
         const email = r.get('Email');
         if (phone) line += ` 📞 ${phone}`;
         if (email) line += ` 📧 ${email}`;
+      }
+      
+      // Show arrival status if available
+      if (sheetHasArrivalTracking) {
+        const arrived = r.get('Arrived');
+        const status = (arrived === 'Yes' || arrived === 'TRUE' || arrived === true) ? '✅' : '❌';
+        line += ` ${status}`;
       }
       
       return line;
@@ -1560,10 +1920,21 @@ async function startApp() {
     // Launch bot (drops any pending updates)
     await bot.launch({ dropPendingUpdates: true });
     console.log('🤖 Telegram bot started successfully');
-    console.log(`🔧 Mode: ${sheetHasPhoneEmail ? '📞📧 Enhanced' : '⚠️ Compatible (backward compatible)'}`);
+    
+    const features = [];
+    features.push(sheetHasPhoneEmail ? '📞📧 Enhanced' : '⚠️ Compatible');
+    features.push(sheetHasArrivalTracking ? '👥 Arrival Tracking' : '❌ No Arrival Tracking');
+    console.log(`🔧 Mode: ${features.join(' | ')}`);
+    
     console.log('📊 Capacity management system active');
     console.log(`🍽️ Lunch capacity: ${CAPACITY_CONFIG.lunch.maxCapacity} (${CAPACITY_CONFIG.lunch.startHour}h-${CAPACITY_CONFIG.lunch.endHour}h)`);
     console.log(`🌙 Dinner capacity: ${CAPACITY_CONFIG.dinner.maxCapacity} (${CAPACITY_CONFIG.dinner.startHour}h-${CAPACITY_CONFIG.dinner.endHour}h)`);
+    
+    if (sheetHasArrivalTracking) {
+      console.log('👥 Arrival tracking enabled - use "🍽️ Arrivées déjeuner" and "🌙 Arrivées dîner" buttons');
+    } else {
+      console.log('💡 To enable arrival tracking, add an "Arrived" column to your Google Sheet and use /refresh');
+    }
   } catch (error) {
     console.error('❌ Failed to start application:', error);
     process.exit(1);
