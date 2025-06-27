@@ -1,6 +1,5 @@
-/* index.js - COMPLETE SAFE ENHANCED VERSION WITH BACKWARD COMPATIBILITY
+/* index.js - SAFE ENHANCED VERSION BASED ON ORIGINAL WORKING CODE
  * Telegram Booking Bot using Google Sheets + Google Calendar + Capacity Control
- * Now with Phone Number and Email support - COMPLETE VERSION
  * ========================================
  */
 
@@ -40,6 +39,9 @@ const CAPACITY_CONFIG = {
 let globalOnlineBookingBlocked = false;
 let waitingList = new Map(); // Pour stocker les demandes en attente
 
+// NEW: Track if sheet has phone/email columns
+let sheetHasPhoneEmail = false;
+
 // Express setup
 const app = express();
 app.use(bodyParser.json());
@@ -60,7 +62,7 @@ app.use((req, res, next) => {
 // Health-check
 app.get('/', (req, res) => res.json({ 
   status: 'running', 
-  service: 'La Savane Booking Bot with Phone/Email Support (Safe Mode)',
+  service: 'La Savane Booking Bot with Capacity Management',
   timestamp: new Date().toISOString()
 }));
 
@@ -72,7 +74,6 @@ let doc;
 let sheet;
 let calendar;
 let serviceAccountAuth;
-let sheetHasPhoneEmail = false; // Track if sheet has new columns
 
 // Store user reservation sessions
 const userSessions = new Map();
@@ -116,7 +117,7 @@ async function getUsedCapacity(date, serviceType) {
     
     rows.forEach((row, index) => {
       const dateTime = row.get('DateTime');
-      const party = row.get('PartySize');
+      const party = row.get('PartySize'); // FIXED: Changed from 'Party' to 'PartySize'
       const name = row.get('Name');
       
       // Debug: afficher quelques lignes pour diagnostiquer
@@ -221,10 +222,10 @@ async function getTodayCapacityStatus() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GOOGLE SERVICES INITIALIZATION WITH COLUMN DETECTION
+// GOOGLE SERVICES INITIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Check if sheet has Phone/Email columns
+// NEW: Check if sheet has Phone/Email columns
 async function checkSheetStructure() {
   try {
     await sheet.loadHeaderRow();
@@ -294,7 +295,7 @@ async function initializeGoogleServices() {
     await doc.loadInfo();
     sheet = doc.sheetsByIndex[0];
     
-    // Check sheet structure for new columns
+    // NEW: Check sheet structure for new columns
     await checkSheetStructure();
     
     // Initialize Google Calendar
@@ -314,10 +315,10 @@ async function initializeGoogleServices() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SAFE BOOKING FUNCTIONS WITH BACKWARD COMPATIBILITY
+// BOOKING FUNCTIONS - ENHANCED WITH PHONE/EMAIL SUPPORT
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Safe booking function that works with old and new sheet structures
+// ENHANCED: booking function with optional phone/email
 async function addBooking({ name, party, datetime, source, phoneNumber = '', email = '' }) {
   if (!sheet || !calendar) {
     throw new Error('Google Services not initialized');
@@ -327,11 +328,11 @@ async function addBooking({ name, party, datetime, source, phoneNumber = '', ema
   if (phoneNumber) console.log(`📞 Phone: ${phoneNumber}`);
   if (email) console.log(`📧 Email: ${email}`);
   
-  // Create row data based on sheet structure
+  // Create row data - SAFE: only add phone/email if columns exist
   let rowData = {
     Timestamp: new Date().toISOString(),
     Name: name,
-    PartySize: party,
+    PartySize: party, // FIXED: Changed from 'Party' to 'PartySize'
     DateTime: datetime,
     Source: source
   };
@@ -348,11 +349,12 @@ async function addBooking({ name, party, datetime, source, phoneNumber = '', ema
   // Add to Google Sheets
   await sheet.addRow(rowData);
 
-  // Add to Google Calendar with contact info in description
+  // Add to Google Calendar - ENHANCED with contact info
   try {
     const startDate = new Date(datetime);
     const endDate = new Date(startDate.getTime() + (2 * 60 * 60 * 1000)); // 2 hours duration
     
+    // Build contact info for calendar
     const contactInfo = [];
     if (phoneNumber) contactInfo.push(`📞 ${phoneNumber}`);
     if (email) contactInfo.push(`📧 ${email}`);
@@ -382,7 +384,7 @@ async function addBooking({ name, party, datetime, source, phoneNumber = '', ema
   }
 }
 
-// Booking function with capacity check
+// ENHANCED: Booking function with capacity check and phone/email
 async function addBookingWithCapacityCheck({ name, party, datetime, source, phoneNumber = '', email = '' }) {
   // Vérifier la capacité avant d'ajouter
   const capacityCheck = await checkCapacityAvailable(datetime, party);
@@ -392,8 +394,8 @@ async function addBookingWithCapacityCheck({ name, party, datetime, source, phon
     throw new Error(`Service ${capacityCheck.service} non disponible. ${capacityCheck.reason}`);
   }
   
-  if (!capacityCheck.available && source === 'Telegram') {
-    // Pour Telegram, proposer la liste d'attente
+  if (!capacityCheck.available && source === 'Phone') {
+    // Pour le téléphone, proposer la liste d'attente
     const waitingId = `${Date.now()}_${name}`;
     waitingList.set(waitingId, {
       name,
@@ -408,7 +410,7 @@ async function addBookingWithCapacityCheck({ name, party, datetime, source, phon
     throw new Error(`${capacityCheck.reason}: ${capacityCheck.service}. Ajouté en liste d'attente.`);
   }
   
-  // Si capacité OK, procéder normalement
+  // Si capacité OK, procéder normalement avec la fonction originale
   await addBooking({ name, party, datetime, source, phoneNumber, email });
   return capacityCheck;
 }
@@ -490,7 +492,7 @@ function getTodayString() {
          String(today.getDate()).padStart(2, '0');
 }
 
-// Generate calendar for current and next month
+// Generate calendar for current and next month - FIXED VERSION
 function generateCalendar() {
   const today = new Date();
   const todayStr = getTodayString();
@@ -622,7 +624,7 @@ function generatePartySizeButtons() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ENHANCED WEBFLOW WEBHOOK WITH EMAIL SUPPORT (SAFE)
+// WEBFLOW WEBHOOK WITH CAPACITY MANAGEMENT - ENHANCED WITH EMAIL
 // ═══════════════════════════════════════════════════════════════════════════
 
 app.post('/webhook', async (req, res) => {
@@ -652,14 +654,7 @@ app.post('/webhook', async (req, res) => {
       return res.status(400).json({ error: 'Format de date invalide' });
     }
     
-    console.log('✅ Traitement réservation:', { 
-      name, 
-      party: partySize, 
-      datetime: when, 
-      source: 'Webflow',
-      email: email || 'N/A',
-      enhancedMode: sheetHasPhoneEmail
-    });
+    console.log('✅ Traitement réservation:', { name, party: partySize, datetime: when, source: 'Webflow', email: email || 'N/A' });
     
     try {
       const capacityResult = await addBookingWithCapacityCheck({ 
@@ -687,10 +682,9 @@ app.post('/webhook', async (req, res) => {
       res.status(200).json({ 
         success: true, 
         message: 'Réservation créée',
-        reservation: { name, partySize, dateTime: when, email: email || '' },
+        reservation: { name, partySize, dateTime: when },
         remaining: capacityResult.remaining,
-        service: capacityResult.service,
-        enhancedMode: sheetHasPhoneEmail
+        service: capacityResult.service
       });
       
     } catch (capacityError) {
@@ -712,62 +706,22 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TELEGRAM BOT COMMANDS AND HANDLERS
+// TELEGRAM BOT COMMANDS AND HANDLERS - ENHANCED
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Reply keyboard with buttons
+// Reply keyboard with buttons (UPDATED WITH CAPACITY MANAGEMENT)
 const mainKeyboard = Markup.keyboard([
   ['➕ Ajouter réservation', "📋 Voir réservations aujourd'hui"],
   ['📅 Voir calendrier', '📊 Voir resa de la semaine'],
   ['📊 Places restantes', '⚙️ Gestion capacité'],
   ['🚫 Bloquer toutes résa en ligne', '✅ Activer toutes résa en ligne'],
-  ['🔍 Debug sheet', '🔧 Add Phone/Email columns']
+  ['🔍 Debug sheet'] // Added debug button
 ]).resize();
 
 // /start
 bot.start(ctx =>
-  ctx.reply(`Bienvenue chez La Savane! 🦁\n${sheetHasPhoneEmail ? '📞📧 Mode Enhanced' : '⚠️ Mode Compatible'}\n\nChoisissez une action:`, mainKeyboard)
+  ctx.reply(`Bienvenue chez La Savane! ${sheetHasPhoneEmail ? '📞📧 Mode Enhanced' : '⚠️ Mode Compatible'}\n\nChoisissez une action:`, mainKeyboard)
 );
-
-// NEW: Add columns command
-bot.hears('🔧 Add Phone/Email columns', async ctx => {
-  try {
-    if (sheetHasPhoneEmail) {
-      return ctx.reply('✅ Les colonnes PhoneNumber et Email existent déjà!');
-    }
-    
-    ctx.reply('🔧 **AJOUT DES COLONNES PHONE/EMAIL**\n\nPour activer le mode enhanced:\n\n1. Ouvrez votre Google Sheet\n2. Ajoutez ces colonnes après "Name":\n   • **PhoneNumber**\n   • **Email**\n\n3. Utilisez "/refresh" pour recharger\n\nOrdre final: Timestamp | Name | PhoneNumber | Email | PartySize | DateTime | Source', {
-      parse_mode: 'Markdown'
-    });
-    
-  } catch (error) {
-    ctx.reply('❌ Erreur lors de la vérification des colonnes');
-  }
-});
-
-// Refresh command
-bot.command('refresh', async ctx => {
-  try {
-    const hadColumns = sheetHasPhoneEmail;
-    await checkSheetStructure();
-    
-    if (sheetHasPhoneEmail && !hadColumns) {
-      ctx.reply('🎉 **Mode Enhanced activé!**\n\nLes colonnes PhoneNumber et Email ont été détectées.\nLe bot collecte maintenant les numéros de téléphone.', {
-        parse_mode: 'Markdown'
-      });
-    } else if (!sheetHasPhoneEmail && hadColumns) {
-      ctx.reply('⚠️ **Retour au mode Compatible**\n\nLes colonnes PhoneNumber/Email ne sont plus détectées.', {
-        parse_mode: 'Markdown'
-      });
-    } else {
-      ctx.reply(`🔄 **Sheet rechargé**\n\nMode: ${sheetHasPhoneEmail ? '📞📧 Enhanced' : '⚠️ Compatible'}`, {
-        parse_mode: 'Markdown'
-      });
-    }
-  } catch (error) {
-    ctx.reply('❌ Erreur lors du rechargement');
-  }
-});
 
 // ── CAPACITY MANAGEMENT COMMANDS ─────────────────────────────────────────────
 
@@ -820,7 +774,7 @@ bot.hears('📊 Places restantes', async ctx => {
   }
 });
 
-// Debug sheet command - ENHANCED WITH SAFE READING
+// ENHANCED: Debug sheet command
 bot.hears('🔍 Debug sheet', async ctx => {
   try {
     if (!sheet) {
@@ -835,31 +789,31 @@ bot.hears('🔍 Debug sheet', async ctx => {
     message += `📋 Headers: ${sheet.headerValues.join(', ')}\n`;
     message += `🔧 Mode: ${sheetHasPhoneEmail ? 'Enhanced' : 'Compatible'}\n\n`;
     
-    // Afficher les 3 dernières réservations avec safe reading
-    const recentRows = rows.slice(-3);
-    message += `📅 **3 dernières réservations:**\n`;
+    // Afficher les 5 dernières réservations
+    const recentRows = rows.slice(-5);
+    message += `📅 **5 dernières réservations:**\n`;
     
     recentRows.forEach((row, index) => {
       const timestamp = row.get('Timestamp') || 'N/A';
       const dateTime = row.get('DateTime') || 'N/A';
       const name = row.get('Name') || 'N/A';
-      const partySize = row.get('PartySize') || 'N/A';
+      const partySize = row.get('PartySize') || 'N/A'; // FIXED: Use PartySize
       const source = row.get('Source') || 'N/A';
       
       message += `**${index + 1}.** ${name}\n`;
-      message += `   📅 ${dateTime}\n`;
-      message += `   👥 ${partySize} pers.\n`;
-      message += `   📱 ${source}\n`;
+      message += `   📅 DateTime: ${dateTime}\n`;
+      message += `   👥 PartySize: ${partySize}\n`;
+      message += `   📱 Source: ${source}\n`;
       
-      // Only show phone/email if columns exist
+      // Only show phone/email if enhanced mode
       if (sheetHasPhoneEmail) {
         const phoneNumber = row.get('PhoneNumber') || 'N/A';
         const email = row.get('Email') || 'N/A';
-        message += `   📞 ${phoneNumber}\n`;
-        message += `   📧 ${email}\n`;
+        message += `   📞 Phone: ${phoneNumber}\n`;
+        message += `   📧 Email: ${email}\n`;
       }
       
-      message += `   ⏰ ${timestamp}\n\n`;
+      message += `   ⏰ Timestamp: ${timestamp}\n\n`;
     });
     
     ctx.reply(message, { parse_mode: 'Markdown' });
@@ -867,6 +821,30 @@ bot.hears('🔍 Debug sheet', async ctx => {
   } catch (error) {
     console.error('Debug sheet error:', error);
     ctx.reply(`❌ Erreur debug: ${error.message}`);
+  }
+});
+
+// NEW: Refresh command to check columns
+bot.command('refresh', async ctx => {
+  try {
+    const hadColumns = sheetHasPhoneEmail;
+    await checkSheetStructure();
+    
+    if (sheetHasPhoneEmail && !hadColumns) {
+      ctx.reply('🎉 **Mode Enhanced activé!**\n\nLes colonnes PhoneNumber et Email ont été détectées.\nLe bot collecte maintenant les numéros de téléphone.', {
+        parse_mode: 'Markdown'
+      });
+    } else if (!sheetHasPhoneEmail && hadColumns) {
+      ctx.reply('⚠️ **Retour au mode Compatible**\n\nLes colonnes PhoneNumber/Email ne sont plus détectées.', {
+        parse_mode: 'Markdown'
+      });
+    } else {
+      ctx.reply(`🔄 **Sheet rechargé**\n\nMode: ${sheetHasPhoneEmail ? '📞📧 Enhanced' : '⚠️ Compatible'}`, {
+        parse_mode: 'Markdown'
+      });
+    }
+  } catch (error) {
+    ctx.reply('❌ Erreur lors du rechargement');
   }
 });
 
@@ -1092,7 +1070,7 @@ bot.hears('➕ Ajouter réservation', ctx => {
   ctx.reply('📅 Choisissez une date pour votre réservation:', generateCalendar());
 });
 
-// Voir réservations aujourd'hui - ENHANCED WITH SAFE READING
+// ENHANCED: Voir réservations aujourd'hui
 bot.hears("📋 Voir réservations aujourd'hui", async ctx => {
   try {
     if (!sheet) {
@@ -1123,7 +1101,7 @@ bot.hears("📋 Voir réservations aujourd'hui", async ctx => {
       const dateTime = r.get('DateTime');
       const t = new Date(dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const name = r.get('Name');
-      const party = r.get('PartySize');
+      const party = r.get('PartySize'); // FIXED: Use PartySize instead of Party
       
       let line = `– ${t}, ${party} pers.: ${name}`;
       
@@ -1231,54 +1209,28 @@ bot.hears('📊 Voir resa de la semaine', async ctx => {
   }
 });
 
-// Keep the old /new command for quick access - ENHANCED
+// Keep the old /new command for quick access
 bot.command('new', async ctx => {
   try {
     const parts = ctx.message.text.split(' ');
     if (parts.length < 5) {
-      return ctx.reply('❌ Format invalide. Utilisez : `/new YYYY-MM-DD HH:MM N Nom [Téléphone]`\n\nOu utilisez le bouton "➕ Ajouter réservation" pour une interface plus simple!', { parse_mode: 'Markdown' });
+      return ctx.reply('❌ Format invalide. Utilisez : `/new YYYY-MM-DD HH:MM N Nom`\n\nOu utilisez le bouton "➕ Ajouter réservation" pour une interface plus simple!', { parse_mode: 'Markdown' });
     }
     
-    const [, date, time, party, ...nameAndPhoneParts] = parts;
-    const nameAndPhone = nameAndPhoneParts.join(' ');
-    
-    // Try to extract phone number (last part if it looks like a phone number)
-    const lastPart = nameAndPhoneParts[nameAndPhoneParts.length - 1];
-    let name, phoneNumber = '';
-    
-    if (lastPart && /^[\d\s\+\-\(\)]{8,}$/.test(lastPart)) {
-      phoneNumber = lastPart;
-      name = nameAndPhoneParts.slice(0, -1).join(' ');
-    } else {
-      name = nameAndPhone;
-    }
+    const [, date, time, party, ...nameParts] = parts;
+    const name = nameParts.join(' ');
     
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) {
       return ctx.reply('❌ Format de date/heure invalide. Utilisez YYYY-MM-DD HH:MM', { parse_mode: 'Markdown' });
     }
     
     const when = new Date(`${date}T${time}:00`).toISOString();
-    await addBooking({ 
-      name, 
-      party: +party, 
-      datetime: when, 
-      source: 'Telegram',
-      phoneNumber
-    });
+    await addBooking({ name, party: +party, datetime: when, source: 'Phone' });
     
-    let successMessage = `✅ Réservation ajoutée : ${date} ${time}, ${party} pers. pour ${name}`;
-    if (phoneNumber) {
-      successMessage += ` 📞 ${phoneNumber}`;
-    }
-    
-    ctx.reply(successMessage);
-    
-    let notificationMessage = `📞 *Réservation ajoutée*\n• ${date} ${time}\n• ${party} pers.: ${name}`;
-    if (phoneNumber) {
-      notificationMessage += `\n• 📞 ${phoneNumber}`;
-    }
-    
-    await notifyTelegram(notificationMessage);
+    ctx.reply(`✅ Réservation ajoutée : ${date} ${time}, ${party} pers. pour ${name}`);
+    await notifyTelegram(
+      `📞 *Réservation téléphone*\n• ${date} ${time}\n• ${party} pers.: ${name}`
+    );
   } catch (error) {
     console.error('Error adding reservation:', error);
     ctx.reply('❌ Erreur lors de l\'ajout de la réservation');
@@ -1308,7 +1260,7 @@ bot.command('list', async ctx => {
       const dateTime = r.get('DateTime');
       const t = new Date(dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const name = r.get('Name');
-      const party = r.get('PartySize');
+      const party = r.get('PartySize'); // FIXED: Use PartySize instead of Party
       
       let line = `– ${t}, ${party} pers.: ${name}`;
       
@@ -1329,7 +1281,7 @@ bot.command('list', async ctx => {
   }
 });
 
-// ── ENHANCED BOOKING FLOW WITH PHONE NUMBER (CONDITIONAL) ───────────────────
+// ── BOOKING FLOW HANDLERS ────────────────────────────────────────────────────
 
 // Handle calendar date selection
 bot.action(/^date_(.+)$/, ctx => {
@@ -1437,9 +1389,9 @@ bot.action(/^month_/, ctx => {
   ctx.answerCbQuery();
 });
 
-// ── ENHANCED TEXT INPUT HANDLER WITH PHONE NUMBER SUPPORT ───────────────────
+// ── ENHANCED TEXT INPUT HANDLER WITH PHONE NUMBER SUPPORT ────────────────────
 
-// Enhanced text input handler with conditional phone number collection
+// Handle name input and capacity changes - ENHANCED with phone support
 bot.on('text', async ctx => {
   const userId = ctx.from.id;
   const session = userSessions.get(userId);
@@ -1473,7 +1425,7 @@ bot.on('text', async ctx => {
     return;
   }
   
-  // Handle name input for reservations
+  // BOOKING: Handle name input for reservations
   if (session && session.waitingForName) {
     const name = ctx.message.text.trim();
     session.customerName = name;
@@ -1522,50 +1474,69 @@ async function processReservation(ctx, session, name, phoneNumber) {
   
   try {
     const dateTime = `${session.selectedDate}T${session.selectedTime}:00`;
-    
-    const capacityResult = await addBookingWithCapacityCheck({
-      name: name,
-      party: parseInt(session.partySize),
-      datetime: dateTime,
-      source: 'Telegram',
-      phoneNumber: phoneNumber
+    console.log('DEBUG: Tentative de réservation:', { 
+      selectedDate: session.selectedDate, 
+      selectedTime: session.selectedTime, 
+      dateTime, 
+      party: session.partySize,
+      name,
+      phoneNumber: phoneNumber || 'N/A'
     });
     
-    userSessions.delete(userId);
-    
-    const dateObj = new Date(session.selectedDate);
-    const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
-      weekday: 'long', 
-      day: 'numeric', 
-      month: 'long'
-    });
-    
-    let confirmationMessage = `✅ *Réservation confirmée!*\n\n` +
-      `📅 ${dateDisplay}\n🕐 ${session.selectedTime}\n👥 ${session.partySize} pers.\n📝 ${name}`;
-    
-    if (phoneNumber && sheetHasPhoneEmail) {
-      confirmationMessage += `\n📞 ${phoneNumber}`;
+    // Use capacity-aware booking function
+    try {
+      const capacityResult = await addBookingWithCapacityCheck({
+        name,
+        party: parseInt(session.partySize),
+        datetime: dateTime,
+        source: 'Phone',
+        phoneNumber: phoneNumber
+      });
+      
+      userSessions.delete(userId);
+      
+      const dateObj = new Date(session.selectedDate);
+      const dateDisplay = dateObj.toLocaleDateString('fr-FR', { 
+        weekday: 'long', 
+        day: 'numeric', 
+        month: 'long'
+      });
+      
+      let confirmationMessage = `✅ *Réservation confirmée!*\n\n` +
+        `📅 ${dateDisplay}\n🕐 ${session.selectedTime}\n👥 ${session.partySize} pers.\n📝 ${name}`;
+      
+      if (phoneNumber && sheetHasPhoneEmail) {
+        confirmationMessage += `\n📞 ${phoneNumber}`;
+      }
+      
+      confirmationMessage += `\n📊 Places restantes ${capacityResult.service}: ${capacityResult.remaining}`;
+      
+      ctx.reply(confirmationMessage, { parse_mode: 'Markdown', ...mainKeyboard });
+      
+      let notificationMsg = `📞 *Nouvelle réservation*\n• ${dateDisplay} ${session.selectedTime}\n• ${session.partySize} pers.: ${name}`;
+      if (phoneNumber && sheetHasPhoneEmail) {
+        notificationMsg += `\n• 📞 ${phoneNumber}`;
+      }
+      notificationMsg += `\n• Restantes ${capacityResult.service}: ${capacityResult.remaining}`;
+      
+      await notifyTelegram(notificationMsg);
+      
+    } catch (capacityError) {
+      ctx.reply(
+        `⚠️ ${capacityError.message}\n\nNous vous contacterons si une place se libère.`,
+        { ...mainKeyboard }
+      );
+      
+      userSessions.delete(userId);
+      
+      let waitingMsg = `⏳ *Liste d'attente*\n• ${name} - ${session.partySize} pers.\n• ${session.selectedDate} ${session.selectedTime}`;
+      if (phoneNumber && sheetHasPhoneEmail) {
+        waitingMsg += `\n• 📞 ${phoneNumber}`;
+      }
+      
+      await notifyTelegram(waitingMsg);
     }
     
-    confirmationMessage += `\n📊 Places restantes ${capacityResult.service}: ${capacityResult.remaining}`;
-    
-    ctx.reply(confirmationMessage, { parse_mode: 'Markdown', ...mainKeyboard });
-    
-    let notificationMsg = `📞 *Nouvelle réservation*\n• ${dateDisplay} ${session.selectedTime}\n• ${session.partySize} pers.: ${name}`;
-    if (phoneNumber && sheetHasPhoneEmail) {
-      notificationMsg += `\n• 📞 ${phoneNumber}`;
-    }
-    notificationMsg += `\n• Restantes ${capacityResult.service}: ${capacityResult.remaining}`;
-    
-    await notifyTelegram(notificationMsg);
-    
-  } catch (capacityError) {
-    ctx.reply(
-      `⚠️ ${capacityError.message}\n\nNous vous contacterons si une place se libère.`,
-      { ...mainKeyboard }
-    );
-    
-    userSessions.delete(userId);
   } catch (error) {
     console.error('Erreur création réservation:', error);
     ctx.reply('❌ Erreur. Réessayez.');
@@ -1614,13 +1585,11 @@ process.once('SIGTERM', () => {
 startApp();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// EXPRESS SERVER
+// EXPRESS SERVER (always bind after startApp, so it won't get skipped)
 // ═══════════════════════════════════════════════════════════════════════════
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Express server listening on 0.0.0.0:${PORT}`);
   console.log(`📍 Health check: http://0.0.0.0:${PORT}`);
   console.log(`🌐 Webhook endpoint: http://0.0.0.0:${PORT}/webhook`);
-  console.log(`📧 Webhook accepts: name, partySize, dateTime, email (optional)`);
-  console.log(`🔧 Safe mode: Works with existing sheet structure`);
 });
